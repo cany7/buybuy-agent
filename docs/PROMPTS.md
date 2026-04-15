@@ -69,6 +69,24 @@
 
 ## 第零层：前置检查（dispatch 前后执行）
 
+### 搜索策略决策（dispatch 前）
+
+在你决定 dispatch_product_search 或 dispatch_category_research 时，应在 action_payload 中填写 `research_brief` 字段，指导研究 Agent 的搜索策略。
+
+**考虑因素**：
+- 用户所在地区（location）
+- 用户使用的语言
+- 品类特征（国际化程度、地区差异）
+- 具体需求（如是否关注二手市场、是否需要对比国际/国内型号）
+
+**示例**：
+- 用户在中国，用中文提问 → "以中文搜索为主，英文搜索为辅。中文搜索关键词应包含产品名称、评测、推荐等；英文搜索关键词用于补充国际评测源。"
+- 用户在美国，用英文提问 → "仅使用英文搜索。搜索关键词应包含产品名称、review、best、buying guide 等。"
+- 用户在中国，但询问国际品牌 → "优先看英文权威评测，再补中文用户经验。如果国际型号和国内型号不同，请标出差异。"
+- 用户关注二手市场 → "重点关注二手市场价格和保值率，搜索关键词包含 used、resale value 等。"
+
+若不确定或无特殊要求，可不填写 `research_brief`，研究 Agent 将按默认策略执行。
+
 ### 约束冲突检测（dispatch_product_search 前）
 在你决定输出 dispatch_product_search 之前，在 internal_reasoning 中检查：
 1. priority=4 的硬约束之间是否存在品类知识中标记的 tradeoff 冲突
@@ -265,8 +283,8 @@ JTBD 三层任务作为你的思维框架，帮助理解用户深层需求：
 ## 用户背景
 {user_context}
 
-## 搜索策略
-{search_language_instruction}
+## 搜索策略提示
+{research_brief}
 
 搜索侧重：选购指南、品类概述、专业分类文章等权威教育性内容。
 来源优先级：专业评测网站的指南 > 论坛精华帖 > 品牌官方说明
@@ -310,8 +328,8 @@ JTBD 三层任务作为你的思维框架，帮助理解用户深层需求：
 - 使用场景：{scenario}
 - 排除项：{exclusions}
 
-## 搜索策略
-{search_language_instruction}
+## 搜索策略提示
+{research_brief}
 
 搜索侧重：具体产品的评测文章、对比测评、用户评价、商品详情。
 来源优先级：专业评测 > 用户真实评价 > 商品详情页 > 营销内容
@@ -338,17 +356,23 @@ JTBD 三层任务作为你的思维框架，帮助理解用户深层需求：
 - suggested_followup 中标注你在搜索中发现的、用户可能关心但未在约束中提及的维度差异
 ```
 
-### 2.3 搜索语言指引（`{search_language_instruction}` 占位符）
+---
 
-应用层根据 `global_profile.location` 生成此占位符的内容：
+## 二、研究 Agent Prompt 模板说明
 
-| 用户城市 | 填入的文本 |
-|---------|---------| 
-| 中国城市 | `"搜索语言策略：以中文搜索为主，英文搜索为辅。中文搜索关键词应包含产品名称、评测、推荐等；英文搜索关键词用于补充国际评测源（如 outdoorgearlab、wirecutter 等）。"` |
-| 非中国城市 | `"搜索语言策略：仅使用英文搜索。搜索关键词应包含产品名称、review、best、buying guide 等。"` |
+### 2.1 模板变量填充规则
+
+研究 Agent 的 prompt 模板由系统层根据 `next_action` 类型选择：
+- `dispatch_category_research` → 品类调研模板
+- `dispatch_product_search` → 产品搜索模板
+
+**`{research_brief}` 占位符**：
+- 由主 Agent 在 `action_payload` 中传递（可选字段）
+- 内容为自然语言，指导研究 Agent 的搜索策略（如搜索语言、关键词策略、信息源优先级等）
+- 若主 Agent 未提供，系统层填入默认提示："请根据任务目标，自主选择合适的搜索语言和关键词策略。"
 
 > [!IMPORTANT]
-> 搜索语言由应用层注入 prompt 模板，不通过 `action_payload` 传递。不将 location 作为搜索约束注入——避免干扰搜索广度和结果质量。
+> 搜索策略由主 Agent 根据 location、用户语言、品类特征等综合判断后，通过 `research_brief` 传递给研究 Agent。系统层不做硬编码策略判断，只负责模板选择和变量填充。
 
 ---
 

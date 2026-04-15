@@ -16,7 +16,45 @@
 - 后续：下一步或注意事项（可选）
 ```
 
+## 2026-04-15
+
+### [implementation] 完成搜索策略重构的代码实现
+- 文件：`src/agents/research_agent.py`、`tests/test_research_agent.py`
+- 变更：
+  1. 删除 `SEARCH_INSTRUCTION_FOR_CHINA` 和 `SEARCH_INSTRUCTION_FOR_NON_CHINA` 常量
+  2. 删除 `_is_china_location()` 和 `get_search_language_instruction()` 函数
+  3. 删除 `_load_global_profile()` 函数（不再需要读取 location）
+  4. 新增 `DEFAULT_RESEARCH_BRIEF` 常量作为默认搜索策略提示
+  5. 修改 `build_product_search_instructions()` 和 `build_category_research_instructions()`：
+     - 移除 `location` 参数
+     - 从 `action_payload.research_brief` 获取搜索策略提示
+     - 若未提供则使用 `DEFAULT_RESEARCH_BRIEF`
+     - 将 `research_brief` 填充到模板的 `{research_brief}` 占位符
+  6. 修改 `execute_research()`：移除 `global_profile` 和 `location` 读取逻辑，直接调用更新后的 `build_*_instructions()`
+  7. 更新测试用例：
+     - 删除 `test_search_language_instruction_switches_by_location` 测试
+     - 更新 `test_build_product_search_instructions_renders_template` 和 `test_build_category_research_instructions_renders_template`，验证默认 `research_brief`
+     - 新增 `test_build_product_search_instructions_uses_custom_research_brief` 和 `test_build_category_research_instructions_uses_custom_research_brief`，验证自定义 `research_brief`
+     - 简化 `test_execute_research_creates_new_agent_each_call` 和 `test_execute_research_supports_category_research`，移除不再需要的 `global_profile.json` mock
+- 原因：落地 2026-04-14 的搜索策略重构设计，将搜索语言决策从系统层硬编码移至主 Agent 语义判断
+- 后续：所有测试通过，代码实现与文档规范完全一致
+
 ## 2026-04-14
+
+### [refactor] 将搜索策略决策从系统层移至主 Agent
+- 文件：`docs/PROMPTS.md`、`docs/INTERFACES.md`、`docs/SPEC.md`、`docs/ARCHITECTURE.md`
+- 变更：
+  1. 删除 `{search_language_instruction}` 占位符及其硬编码规则（根据 location 判断"搜中文/搜英文"）
+  2. 新增 `research_brief` 字段（可选），由主 Agent 在 dispatch 时传递自然语言搜索策略提示
+  3. 在主 Agent prompt 中增加"搜索策略决策"指导，要求主 Agent 根据 location、用户语言、品类特征等综合判断后填写 `research_brief`
+  4. 研究 Agent 模板改为接收 `{research_brief}` 占位符，若未提供则使用默认提示
+  5. 更新 ARCHITECTURE.md 的分工原则示例，明确"搜索语言策略"属于语义判断，应由主 Agent 做
+  6. 更新 SPEC.md §6.4，将"搜索语言策略"改为"搜索策略决策"
+- 原因：
+  - 硬编码的 location → 搜索语言映射削弱了主 Agent 的决策空间，无法处理"用户在中国但询问国际品牌"等复杂场景
+  - 自然语言 `research_brief` 比结构化 `search_strategy` 枚举更灵活，避免过早定死策略空间
+  - 保持子 Agent 模板独立性，系统层只负责模板选择和变量填充，不做语义判断
+- 后续：代码实现时需同步修改 `research_agent.py`（删除 `_is_china_location()` 等函数，修改 `build_*_instructions()` 和 `execute_research()`）
 
 ### [implementation] 完成 P2.2 品类调研执行与后处理
 - 文件：`src/agents/prompts.py`、`src/agents/research_agent.py`、`src/router/action_router.py`、`tests/test_research_agent.py`、`tests/test_action_router.py`

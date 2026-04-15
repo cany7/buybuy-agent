@@ -21,13 +21,7 @@ from src.models.research import CategoryResearchOutput, ProductSearchOutput
 ResponseModelT = TypeVar("ResponseModelT", bound=BaseModel)
 ResearchOutput = CategoryResearchOutput | ProductSearchOutput
 
-SEARCH_INSTRUCTION_FOR_CHINA = (
-    "搜索语言策略：以中文搜索为主，英文搜索为辅。中文搜索关键词应包含产品名称、评测、推荐等；"
-    "英文搜索关键词用于补充国际评测源。"
-)
-SEARCH_INSTRUCTION_FOR_NON_CHINA = (
-    "搜索语言策略：仅使用英文搜索。搜索关键词应包含产品名称、review、best、buying guide 等。"
-)
+DEFAULT_RESEARCH_BRIEF = "请根据任务目标，自主选择合适的搜索语言和关键词策略。"
 
 
 def _default_env_path() -> str:
@@ -46,33 +40,6 @@ def build_research_agent_client(model: str | None = None) -> OpenAIChatClient:
         model=model or os.getenv("SHOPPING_RESEARCH_AGENT_MODEL", "gpt-4o-mini"),
         env_file_path=_default_env_path(),
     )
-
-
-def _load_global_profile() -> dict[str, Any] | None:
-    path = _data_dir() / "user_profile" / "global_profile.json"
-    if not path.exists():
-        return None
-    with path.open("r", encoding="utf-8") as file:
-        data = json.load(file)
-    return data if isinstance(data, dict) else None
-
-
-def _is_china_location(location: str | None) -> bool:
-    if not location:
-        return False
-    normalized = location.strip().lower()
-    china_markers = ["中国", "china", "beijing", "shanghai", "guangzhou", "shenzhen", "hangzhou", "chengdu"]
-    if any(marker in normalized for marker in china_markers):
-        return True
-    return any("\u4e00" <= char <= "\u9fff" for char in location)
-
-
-def get_search_language_instruction(location: str | None) -> str:
-    """Return the prompt instruction for search language selection."""
-
-    if _is_china_location(location):
-        return SEARCH_INSTRUCTION_FOR_CHINA
-    return SEARCH_INSTRUCTION_FOR_NON_CHINA
 
 
 def _format_optional_value(value: Any, *, default: str) -> str:
@@ -132,10 +99,14 @@ def validate_category_research_payload(action_payload: dict[str, Any]) -> None:
         raise ValueError("action_payload.user_context is required.")
 
 
-def build_product_search_instructions(action_payload: dict[str, Any], location: str | None) -> str:
+def build_product_search_instructions(action_payload: dict[str, Any]) -> str:
     """Render the product-search prompt template with payload fields."""
 
     constraints = action_payload["constraints"]
+    research_brief = action_payload.get("research_brief", "")
+    if not research_brief:
+        research_brief = DEFAULT_RESEARCH_BRIEF
+
     return load_product_search_template().format(
         product_type=action_payload["product_type"],
         search_goal=action_payload["search_goal"],
@@ -144,18 +115,22 @@ def build_product_search_instructions(action_payload: dict[str, Any], location: 
         key_requirements=_format_optional_value(constraints.get("key_requirements"), default="无"),
         scenario=_format_optional_value(constraints.get("scenario"), default="未提供"),
         exclusions=_format_optional_value(constraints.get("exclusions"), default="无"),
-        search_language_instruction=get_search_language_instruction(location),
+        research_brief=research_brief,
     )
 
 
-def build_category_research_instructions(action_payload: dict[str, Any], location: str | None) -> str:
+def build_category_research_instructions(action_payload: dict[str, Any]) -> str:
     """Render the category-research prompt template with payload fields."""
+
+    research_brief = action_payload.get("research_brief", "")
+    if not research_brief:
+        research_brief = DEFAULT_RESEARCH_BRIEF
 
     return load_category_research_template().format(
         category=action_payload["category"],
         product_type=action_payload["product_type"],
         user_context=action_payload["user_context"],
-        search_language_instruction=get_search_language_instruction(location),
+        research_brief=research_brief,
     )
 
 
@@ -210,19 +185,16 @@ async def execute_research(
 ) -> ResearchOutput:
     """Run a research task for product search or category research."""
 
-    global_profile = _load_global_profile() or {}
-    location = global_profile.get("demographics", {}).get("location")
-
     if task_type == "dispatch_product_search":
         validate_product_search_payload(action_payload)
-        instructions = build_product_search_instructions(action_payload, location)
+        instructions = build_product_search_instructions(action_payload)
         task_prompt = (
             "请根据提供的约束执行产品搜索，并严格按 ProductSearchOutput 返回结构化结果。"
         )
         response_format: type[ResearchOutput] = ProductSearchOutput
     elif task_type == "dispatch_category_research":
         validate_category_research_payload(action_payload)
-        instructions = build_category_research_instructions(action_payload, location)
+        instructions = build_category_research_instructions(action_payload)
         task_prompt = (
             "请根据提供的品类调研任务执行搜索，并严格按 CategoryResearchOutput 返回结构化结果。"
         )

@@ -542,12 +542,30 @@ async def execute_research(task_type: str, action_payload: dict) -> ResearchOutp
     # 0. payload sanity check（字段完整性 / 基础合法性）
     validate_dispatch_payload(action_payload)
 
-    # 1. 选择 prompt 模板 + 注入搜索语言
+    # 1. 选择 prompt 模板 + 填充变量（包括 research_brief）
+    research_brief = action_payload.get("research_brief", "")
+    if not research_brief:
+        research_brief = "请根据任务目标，自主选择合适的搜索语言和关键词策略。"
+    
     if task_type == "dispatch_category_research":
-        instructions = CATEGORY_RESEARCH_TEMPLATE.format(**action_payload)
+        instructions = CATEGORY_RESEARCH_TEMPLATE.format(
+            category=action_payload["category"],
+            product_type=action_payload["product_type"],
+            user_context=action_payload["user_context"],
+            research_brief=research_brief,
+        )
         output_model = CategoryResearchOutput
     else:
-        instructions = PRODUCT_SEARCH_TEMPLATE.format(**action_payload)
+        instructions = PRODUCT_SEARCH_TEMPLATE.format(
+            product_type=action_payload["product_type"],
+            search_goal=action_payload["search_goal"],
+            budget=action_payload["constraints"].get("budget", "null"),
+            gender=action_payload["constraints"].get("gender", "未提供"),
+            key_requirements=action_payload["constraints"]["key_requirements"],
+            scenario=action_payload["constraints"].get("scenario", "未提供"),
+            exclusions=action_payload["constraints"].get("exclusions", []),
+            research_brief=research_brief,
+        )
         output_model = ProductSearchOutput
 
     # 2. 创建研究 Agent 实例（新 context）
@@ -727,7 +745,7 @@ Instructions 保持策略规则全集，用阶段标题组织，LLM 根据 sessi
 | candidate_products 刷新 | dispatch_product_search 后将研究 Agent 初筛结果刷新为活动候选池 | Dispatch 后处理 |
 | recommendation_round 自动重置 | dispatch_product_search 后重置为 "未开始" | Dispatch 后处理 |
 | 长期画像恢复写入 | 启动时检查 `pending_profile_updates` → 通过恢复规则后写入长期画像 | 启动恢复检查 |
-| 搜索语言注入 | 从 global_profile.location 判断 → 填入 prompt 模板 | execute_research() |
+| 搜索策略传递 | 主 Agent 在 dispatch payload 中传 research_brief → 填入 prompt 模板 | execute_research() |
 | staleness 检测 | 计算 last_updated 距今天数 → 注入标注 | SessionContextProvider |
 | 边界保护 | 检查最大轮数、最大 dispatch 次数 | 外部循环 |
 | 研究 Agent 生命周期 | 创建 → 运行 → 销毁 → 后处理 | execute_research() |
@@ -744,5 +762,9 @@ Instructions 保持策略规则全集，用阶段标题组织，LLM 根据 sessi
 
 例外情况：即使是确定性逻辑（如 urgency = priority × confidence），如果该计算与语义判断不可分割（priority 的赋值本身就是语义判断），也由 LLM 一并完成。
 
+**搜索策略决策示例**：
+- ❌ 系统层根据 location 硬编码"搜中文/搜英文" → 这是语义判断，应由主 Agent 做
+- ✅ 主 Agent 根据 location、用户语言、品类特征等综合判断，生成 research_brief → 系统层只负责填充模板
+
 > [!WARNING]
-> **Coding Agent 开发时最常犯的错误**：把应该由系统代码做的事情写进 prompt 让 LLM 判断（如检测文件是否存在），或者把应该由 LLM 判断的事情写成硬编码规则（如 stage 转移条件）。务必对照此矩阵。
+> **Coding Agent 开发时最常犯的错误**：把应该由系统代码做的事情写进 prompt 让 LLM 判断（如检测文件是否存在），或者把应该由 LLM 判断的事情写成硬编码规则（如 stage 转移条件、搜索语言策略）。务必对照此矩阵。

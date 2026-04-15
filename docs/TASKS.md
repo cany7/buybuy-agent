@@ -217,7 +217,7 @@ class DocumentStore:
    - 接收 `task_type` 和 `action_payload`
    - Phase 1 仅支持 `dispatch_product_search`
    - 从 PROMPTS.md §2.2 的模板填充 instructions
-   - 注入搜索语言指引（根据 `global_profile.location` 决定中文优先或仅英文搜索）
+   - 从 `action_payload.research_brief` 获取搜索策略提示（可选），若未提供则使用默认提示
    - 如仅做本地 fixture / 手工验证，可临时硬编码为中文，但这属于测试限定，不属于正式实现口径
    - `dispatch_product_search` 的 payload 校验接受 `constraints.budget = null / "unspecified"` 的合法情况
    - 创建研究 Agent 实例 → 运行 → 返回 `ProductSearchOutput`

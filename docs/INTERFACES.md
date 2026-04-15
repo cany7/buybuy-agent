@@ -219,18 +219,42 @@ class ProductSearchOutput(BaseModel):
 
 ### 2.1 `dispatch_category_research` payload
 
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| category | string | 是 | 品类名称 |
+| product_type | string | 是 | 产品类型 |
+| user_context | string | 是 | 用户背景信息 |
+| research_brief | string | 否 | 搜索策略提示（自然语言），例如"优先看英文权威评测，再补中文用户经验"。若不提供，研究 Agent 按默认策略执行 |
+
+**示例**：
 ```json
 {
   "category": "户外装备",
   "product_type": "冲锋衣",
-  "user_context": "男性用户，28岁，上海，具体需求未知"
+  "user_context": "男性用户，28岁，上海，具体需求未知",
+  "research_brief": "以中文搜索为主，英文搜索为辅。中文搜索关键词应包含产品名称、评测、推荐等；英文搜索关键词用于补充国际评测源。"
 }
 ```
 
-> 搜索语言由应用层从 `global_profile.location` 确定，填入研究 Agent 的 prompt 模板，不通过 payload 传递。
-
 ### 2.2 `dispatch_product_search` payload
 
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| product_type | string | 是 | 产品类型 |
+| search_goal | string | 是 | 搜索目标描述 |
+| constraints | object | 是 | 约束条件（见下表） |
+| research_brief | string | 否 | 搜索策略提示（自然语言） |
+
+**constraints 字段**：
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| budget | string \| null | 否 | 预算范围（如 "2500-3500"）或 null/"unspecified" |
+| gender | string | 否 | 性别偏好 |
+| key_requirements | list[string] | 是 | 核心需求列表 |
+| scenario | string | 否 | 使用场景 |
+| exclusions | list[string] | 否 | 排除项（品牌/产品） |
+
+**示例**：
 ```json
 {
   "product_type": "冲锋衣",
@@ -241,16 +265,17 @@ class ProductSearchOutput(BaseModel):
     "key_requirements": ["高防水（用户有淋雨经历，不能是基础防水）", "兼顾透气"],
     "scenario": "周末徒步+偶尔4000m级高海拔",
     "exclusions": ["国产品牌"]
-  }
+  },
+  "research_brief": "优先看英文权威评测，再补中文用户经验。如果国际型号和国内型号不同，请标出差异。"
 }
 ```
 
 > [!NOTE]
-> - `product_type`、`search_goal`、`constraints.key_requirements`、`constraints.exclusions` 为最低必要信息
+> - `product_type`、`search_goal`、`constraints.key_requirements` 为最低必要信息
 > - `budget` 为**可选约束字段**：若当前任务预算未知、非阻塞，或用户明确要求先不看预算，可显式传 `null` 或 `"unspecified"`
 > - `budget` 可能是区间（如 "2500-3500"）而非单一数字，应用层**不尝试做数值解析**
 > - `exclusions` 传递用户在 session 或 category_preferences 中已表达的排斥偏好（`anti_preferences`），由主 Agent 在 CoT 中综合两个来源写入
-> - 搜索语言同样由应用层注入 prompt 模板
+> - `research_brief` 由主 Agent 根据 location、用户语言、品类特征等综合判断后填写，系统层只负责填充到 prompt 模板
 
 ### 2.3 `onboard_user` payload
 

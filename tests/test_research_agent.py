@@ -8,13 +8,11 @@ from typing import Any
 import pytest
 
 from src.agents.research_agent import (
-    SEARCH_INSTRUCTION_FOR_CHINA,
-    SEARCH_INSTRUCTION_FOR_NON_CHINA,
+    DEFAULT_RESEARCH_BRIEF,
     build_category_research_instructions,
     build_product_search_instructions,
     create_research_agent,
     execute_research,
-    get_search_language_instruction,
     validate_category_research_payload,
     validate_product_search_payload,
 )
@@ -66,25 +64,38 @@ def test_validate_category_research_payload_rejects_missing_fields() -> None:
         validate_category_research_payload({"category": "", "product_type": "", "user_context": ""})
 
 
-def test_search_language_instruction_switches_by_location() -> None:
-    assert get_search_language_instruction("上海") == SEARCH_INSTRUCTION_FOR_CHINA
-    assert get_search_language_instruction("Chicago, IL") == SEARCH_INSTRUCTION_FOR_NON_CHINA
-
-
 def test_build_product_search_instructions_renders_template() -> None:
-    instructions = build_product_search_instructions(_payload(), "上海")
+    instructions = build_product_search_instructions(_payload())
 
     assert "搜索适合周末徒步的冲锋衣" in instructions
-    assert SEARCH_INSTRUCTION_FOR_CHINA in instructions
+    assert DEFAULT_RESEARCH_BRIEF in instructions
     assert "预算范围：unspecified" in instructions
 
 
+def test_build_product_search_instructions_uses_custom_research_brief() -> None:
+    payload = _payload()
+    payload["research_brief"] = "优先看英文权威评测，再补中文用户经验。"
+    instructions = build_product_search_instructions(payload)
+
+    assert "优先看英文权威评测" in instructions
+    assert DEFAULT_RESEARCH_BRIEF not in instructions
+
+
 def test_build_category_research_instructions_renders_template() -> None:
-    instructions = build_category_research_instructions(_category_payload(), "上海")
+    instructions = build_category_research_instructions(_category_payload())
 
     assert "调研 户外装备 品类下的 冲锋衣 产品类型" in instructions
     assert "男性用户，28岁，上海" in instructions
-    assert SEARCH_INSTRUCTION_FOR_CHINA in instructions
+    assert DEFAULT_RESEARCH_BRIEF in instructions
+
+
+def test_build_category_research_instructions_uses_custom_research_brief() -> None:
+    payload = _category_payload()
+    payload["research_brief"] = "以中文搜索为主，英文搜索为辅。"
+    instructions = build_category_research_instructions(payload)
+
+    assert "以中文搜索为主" in instructions
+    assert DEFAULT_RESEARCH_BRIEF not in instructions
 
 
 def test_create_research_agent_registers_search_tool() -> None:
@@ -95,13 +106,6 @@ def test_create_research_agent_registers_search_tool() -> None:
 
 @pytest.mark.asyncio
 async def test_execute_research_creates_new_agent_each_call(monkeypatch, tmp_path: Path) -> None:
-    profile_path = tmp_path / "data" / "user_profile" / "global_profile.json"
-    profile_path.parent.mkdir(parents=True, exist_ok=True)
-    profile_path.write_text(
-        json.dumps({"demographics": {"location": "上海"}}, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-
     from src.agents import research_agent as module
 
     created_runners: list[str] = []
@@ -119,7 +123,6 @@ async def test_execute_research_creates_new_agent_each_call(monkeypatch, tmp_pat
                 suggested_followup="关注透气性",
             )
 
-    monkeypatch.setattr(module, "_data_dir", lambda: tmp_path / "data")
     monkeypatch.setattr(
         module,
         "create_research_agent",
@@ -139,13 +142,6 @@ async def test_execute_research_creates_new_agent_each_call(monkeypatch, tmp_pat
 
 @pytest.mark.asyncio
 async def test_execute_research_supports_category_research(monkeypatch, tmp_path: Path) -> None:
-    profile_path = tmp_path / "data" / "user_profile" / "global_profile.json"
-    profile_path.parent.mkdir(parents=True, exist_ok=True)
-    profile_path.write_text(
-        json.dumps({"demographics": {"location": "上海"}}, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-
     from src.agents import research_agent as module
 
     class FakeRunner:
@@ -224,7 +220,6 @@ async def test_execute_research_supports_category_research(monkeypatch, tmp_path
                 }
             )
 
-    monkeypatch.setattr(module, "_data_dir", lambda: tmp_path / "data")
     monkeypatch.setattr(
         module,
         "create_research_agent",
