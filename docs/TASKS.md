@@ -69,7 +69,7 @@ graph TD
 1. 创建项目目录结构：
 
 ```
-shopping_agent/
+shopping/
 ├── src/
 │   ├── __init__.py
 │   ├── models/              # Pydantic 模型
