@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import datetime
 from typing import Any, Callable, Protocol
 
 from src.agents.main_agent import create_main_agent
+from src.context.knowledge_provider import KnowledgeContextProvider
+from src.context.session_provider import SessionContextProvider
 from src.agents.research_agent import execute_research
 from src.models.decision import DecisionOutput
 from src.router.action_router import ActionRouter, RouteResult
@@ -15,6 +16,7 @@ from src.store.document_store import DocumentStore
 
 SessionState = dict[str, Any]
 ContextBuilder = Callable[[SessionState], str]
+MessageEmitter = Callable[[str], object]
 
 
 class MainAgentProtocol(Protocol):
@@ -33,13 +35,7 @@ class AppTurnResult:
     should_continue: bool
     session: SessionState
     decision: DecisionOutput
-
-
-def generate_session_id(now: datetime | None = None) -> str:
-    """Generate a session id in the documented format."""
-
-    current = now or datetime.now()
-    return current.strftime("%Y-%m-%d-%H%M%S")
+    user_message_delivered: bool = False
 
 
 def build_minimal_context(session: SessionState) -> str:
@@ -58,6 +54,21 @@ def build_minimal_context(session: SessionState) -> str:
     return "\n".join(lines)
 
 
+def build_phase_one_context(
+    session: SessionState,
+    *,
+    session_provider: SessionContextProvider,
+    knowledge_provider: KnowledgeContextProvider,
+) -> str:
+    """Combine session and Phase 1 knowledge context blocks."""
+
+    blocks = [session_provider.build_context(session)]
+    knowledge_context = knowledge_provider.build_context(session)
+    if knowledge_context:
+        blocks.extend(["", knowledge_context])
+    return "\n".join(blocks)
+
+
 class ShoppingApplication:
     """Phase 1 application loop without CLI concerns."""
 
@@ -67,7 +78,7 @@ class ShoppingApplication:
         store: DocumentStore | None = None,
         main_agent: MainAgentProtocol | None = None,
         action_router: ActionRouter | None = None,
-        context_builder: ContextBuilder = build_minimal_context,
+        context_builder: ContextBuilder | None = None,
     ) -> None:
         self.store = store or DocumentStore()
         self.main_agent = main_agent or create_main_agent()
@@ -75,21 +86,20 @@ class ShoppingApplication:
             store=self.store,
             research_executor=execute_research,
         )
-        self.context_builder = context_builder
+        self.session_provider = SessionContextProvider(store=self.store)
+        self.knowledge_provider = KnowledgeContextProvider(store=self.store)
+        self.context_builder = context_builder or (
+            lambda session: build_phase_one_context(
+                session,
+                session_provider=self.session_provider,
+                knowledge_provider=self.knowledge_provider,
+            )
+        )
 
     def load_or_create_active_session(self) -> SessionState:
         """Load the current session or create a new minimal one."""
 
-        session = self.store.load_session()
-        if session is not None:
-            return session
-
-        created = {
-            "session_id": generate_session_id(),
-            "decision_progress": {"recommendation_round": "未开始"},
-        }
-        self.store.save_session(created)
-        return self.store.load_session() or created
+        return self.session_provider.load_or_create_session()
 
     def run_recovery_check_if_needed(self, session: SessionState) -> bool:
         """Run startup-only recovery check for pending profile updates."""
@@ -98,16 +108,30 @@ class ShoppingApplication:
             return False
         return self.store.apply_pending_profile_updates(session)
 
-    async def run_turn(self, user_input: str | None = None) -> AppTurnResult:
-        """Execute one outer-loop turn."""
+    async def initialize_session(self) -> SessionState:
+        """Load/create the active session and run startup-only recovery checks."""
 
         session = self.load_or_create_active_session()
         self.run_recovery_check_if_needed(session)
+        return session
 
+    async def run_turn(
+        self,
+        user_input: str | None = None,
+        *,
+        emit_user_message: MessageEmitter | None = None,
+    ) -> AppTurnResult:
+        """Execute one outer-loop turn."""
+
+        session = self.load_or_create_active_session()
         had_pending_research_result = "pending_research_result" in session
         context = self.context_builder(session)
         decision = await self.main_agent.run(context, user_input or "")
-        route_result = await self.action_router.route(decision, session)
+        route_result = await self.action_router.route(
+            decision,
+            session,
+            emit_user_message=emit_user_message,
+        )
         final_session = self._run_post_checks(
             route_result=route_result,
             had_pending_research_result=had_pending_research_result,
@@ -119,6 +143,7 @@ class ShoppingApplication:
             should_continue=route_result.should_continue,
             session=final_session,
             decision=decision,
+            user_message_delivered=route_result.user_message_delivered,
         )
 
     def _run_post_checks(

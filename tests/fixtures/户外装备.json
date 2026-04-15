@@ -1,0 +1,204 @@
+{
+  "category": "户外装备",
+  "last_updated": "2026-04-14",
+  "category_knowledge": {
+    "data_sources": [
+      "https://www.outdoorgearlab.com/topics/clothing-mens/best-hardshell-jacket",
+      "https://www.switchbacktravel.com/best-hardshell-jackets",
+      "https://zhuanlan.zhihu.com/p/625167770"
+    ],
+    "product_type_overview": [
+      {
+        "product_type": "冲锋衣",
+        "subtypes": [
+          "硬壳",
+          "软壳",
+          "三合一"
+        ],
+        "description": "用于防风防雨和环境防护的外层服装，不同子类型在防护、透气和舒适度上取舍明显。"
+      },
+      {
+        "product_type": "登山鞋",
+        "subtypes": [
+          "轻量徒步鞋",
+          "中帮徒步鞋",
+          "重装登山鞋"
+        ],
+        "description": "覆盖从轻徒步到重装穿越的足部防护与支撑需求。"
+      }
+    ],
+    "shared_concepts": [
+      {
+        "name": "GORE-TEX",
+        "description": "常见的防水透气膜技术，常用于硬壳和部分徒步鞋产品。",
+        "relevant_product_types": [
+          "冲锋衣",
+          "登山鞋"
+        ]
+      },
+      {
+        "name": "DWR",
+        "description": "面料表层拒水处理，可提升泼水表现，但不是决定性防水能力本身。",
+        "relevant_product_types": [
+          "冲锋衣"
+        ]
+      }
+    ],
+    "brand_landscape": [
+      {
+        "brand": "Arc'teryx",
+        "positioning": "高端技术流",
+        "known_for": "硬壳版型、做工和高山场景产品线"
+      },
+      {
+        "brand": "Patagonia",
+        "positioning": "中高端综合户外",
+        "known_for": "环保理念和均衡型徒步产品"
+      },
+      {
+        "brand": "Mammut",
+        "positioning": "山地导向",
+        "known_for": "高山和攀登相关服装装备"
+      }
+    ]
+  },
+  "product_types": {
+    "冲锋衣": {
+      "subtypes": {
+        "硬壳": "以强防护、防水防风为主，适合恶劣天气和高强度山地环境。",
+        "软壳": "更强调舒适与透气，适合干冷或轻量防护场景。",
+        "三合一": "通过内外层组合覆盖更广场景，但整体重量和灵活性通常不如单独硬壳。"
+      },
+      "decision_dimensions": [
+        {
+          "name": "防水",
+          "objectivity": "可量化",
+          "importance": "高",
+          "ambiguity_risk": "中",
+          "ambiguity_note": "用户说的“防水够用”可能对应从城市通勤到长时间暴雨穿行的完全不同要求。"
+        },
+        {
+          "name": "透气",
+          "objectivity": "半量化",
+          "importance": "高",
+          "ambiguity_risk": "中",
+          "ambiguity_note": "“容易出汗”需要锚定具体运动强度与气候。"
+        },
+        {
+          "name": "重量与收纳",
+          "objectivity": "可量化",
+          "importance": "中",
+          "ambiguity_risk": "低"
+        },
+        {
+          "name": "耐磨与耐用性",
+          "objectivity": "半量化",
+          "importance": "中",
+          "ambiguity_risk": "低"
+        },
+        {
+          "name": "版型与剪裁",
+          "objectivity": "主观",
+          "importance": "中",
+          "ambiguity_risk": "中",
+          "ambiguity_note": "需要区分日常通勤审美和叠穿活动空间。"
+        }
+      ],
+      "tradeoffs": [
+        {
+          "dimensions": [
+            "防水",
+            "透气"
+          ],
+          "explanation": "更极致的防护通常意味着更低的透气效率，尤其在持续输出场景下更明显。"
+        },
+        {
+          "dimensions": [
+            "耐磨与耐用性",
+            "重量与收纳"
+          ],
+          "explanation": "更厚更耐磨的面料通常更重、收纳体积更大。"
+        },
+        {
+          "dimensions": [
+            "版型与剪裁",
+            "叠穿空间"
+          ],
+          "explanation": "更利落的日常剪裁可能减少内搭保暖层或头盔兼容的空间。"
+        }
+      ],
+      "price_tiers": [
+        {
+          "range": "500-1000",
+          "typical": "入门国产或折扣老款",
+          "features": "满足基础防风防雨，但长期防水、透气和细节做工通常有限。"
+        },
+        {
+          "range": "1000-2500",
+          "typical": "主流徒步向产品",
+          "features": "能够覆盖大多数周末徒步和中等天气强度场景，性价比较高。"
+        },
+        {
+          "range": "2500-5000+",
+          "typical": "高端技术硬壳",
+          "features": "面向高海拔、恶劣天气或高频使用，面料、做工和细节配置更完整。"
+        }
+      ],
+      "scenario_mapping": [
+        {
+          "scenario": "城市通勤与周边短途",
+          "key_needs": [
+            "基础防雨",
+            "舒适度",
+            "版型与剪裁"
+          ],
+          "can_compromise": [
+            "极限防护",
+            "头盔兼容"
+          ]
+        },
+        {
+          "scenario": "周末徒步与轻装露营",
+          "key_needs": [
+            "防水",
+            "透气",
+            "重量与收纳"
+          ],
+          "can_compromise": [
+            "极端耐磨",
+            "专业攀登细节"
+          ]
+        },
+        {
+          "scenario": "高海拔或恶劣天气活动",
+          "key_needs": [
+            "防水",
+            "防风",
+            "耐磨与耐用性"
+          ],
+          "can_compromise": [
+            "轻量",
+            "日常版型"
+          ]
+        }
+      ],
+      "common_misconceptions": [
+        {
+          "misconception": "只要面料名气大就一定适合自己。",
+          "reality": "同一类面料也会因为剪裁、压胶、厚度和定位不同而适配完全不同场景。",
+          "anchor_suggestion": "先确认最常见的使用场景和天气强度，再判断是否需要高端面料。"
+        },
+        {
+          "misconception": "冲锋衣越厚越高级。",
+          "reality": "厚重通常意味着更高防护或耐磨，但不一定适合高输出徒步和日常穿着。",
+          "anchor_suggestion": "确认你更在意持续暴雨防护，还是长时间行进时的闷热控制。"
+        },
+        {
+          "misconception": "三合一一定比单件硬壳更划算。",
+          "reality": "三合一覆盖面更广，但在重量、收纳和专业场景表现上不一定优于独立硬壳。",
+          "anchor_suggestion": "先判断你需要的是多场景一件搞定，还是更专门化的外层性能。"
+        }
+      ]
+    }
+  }
+}

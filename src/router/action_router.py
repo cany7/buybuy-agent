@@ -6,6 +6,7 @@ import json
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
+from inspect import isawaitable
 from typing import Any, Awaitable, Callable
 
 from src.models.decision import DecisionOutput
@@ -14,6 +15,7 @@ from src.store.document_store import DocumentStore
 
 SessionState = dict[str, Any]
 ResearchExecutor = Callable[[str, dict[str, Any]], Awaitable[ProductSearchOutput]]
+MessageEmitter = Callable[[str], object]
 
 SESSION_UPDATE_WHITELIST = {
     "intent",
@@ -38,6 +40,7 @@ class RouteResult:
     should_continue: bool
     session: SessionState
     replaced_pending_research_result: bool = False
+    user_message_delivered: bool = False
 
 
 class ActionRouter:
@@ -51,7 +54,13 @@ class ActionRouter:
         self._store = store
         self._research_executor = research_executor
 
-    async def route(self, decision: DecisionOutput, session: SessionState) -> RouteResult:
+    async def route(
+        self,
+        decision: DecisionOutput,
+        session: SessionState,
+        *,
+        emit_user_message: MessageEmitter | None = None,
+    ) -> RouteResult:
         """Execute one next_action and persist session-side effects."""
 
         original_session = deepcopy(session)
@@ -62,12 +71,16 @@ class ActionRouter:
         replaced_pending_research_result = False
         wait_for_user_input = False
         should_continue = False
+        user_message_delivered = False
 
         if decision.next_action in {"ask_user", "recommend"}:
             wait_for_user_input = True
         elif decision.next_action == "dispatch_product_search":
             if decision.action_payload is None:
                 raise ValueError("dispatch_product_search requires action_payload.")
+            if emit_user_message is not None:
+                await self._deliver_user_message(emit_user_message, decision.user_message)
+                user_message_delivered = True
             result = await self._research_executor(
                 "dispatch_product_search",
                 decision.action_payload,
@@ -98,6 +111,7 @@ class ActionRouter:
             should_continue=should_continue,
             session=working_session,
             replaced_pending_research_result=replaced_pending_research_result,
+            user_message_delivered=user_message_delivered,
         )
 
     def _apply_session_updates(
@@ -143,7 +157,11 @@ class ActionRouter:
     ) -> None:
         original_round = (original_session.get("decision_progress") or {}).get("recommendation_round")
         current_round = (working_session.get("decision_progress") or {}).get("recommendation_round")
-        if current_round == "完成" and original_round != "完成" and decision.profile_updates:
+        if current_round == "完成" and original_round != "完成":
+            if not decision.profile_updates:
+                raise ValueError(
+                    "profile_updates is required when recommendation_round becomes 完成."
+                )
             working_session["pending_profile_updates"] = deepcopy(decision.profile_updates)
 
     def _write_demographics(self, action_payload: dict[str, Any] | None) -> None:
@@ -166,3 +184,12 @@ class ActionRouter:
         with profile_path.open("w", encoding="utf-8") as file:
             json.dump(existing, file, ensure_ascii=False, indent=2)
             file.write("\n")
+
+    async def _deliver_user_message(
+        self,
+        emitter: MessageEmitter,
+        user_message: str,
+    ) -> None:
+        delivered = emitter(user_message)
+        if isawaitable(delivered):
+            await delivered

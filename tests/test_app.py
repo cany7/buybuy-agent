@@ -2,13 +2,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import pytest
 
-from src.app import ShoppingApplication, generate_session_id
+from src.app import ShoppingApplication
 from src.models.decision import DecisionOutput
 from src.router.action_router import ActionRouter
 from src.store.document_store import DocumentStore
+from src.utils.session import generate_session_id
 
 
 @dataclass
@@ -31,6 +33,16 @@ def _decision(**overrides: object) -> DecisionOutput:
     }
     payload.update(overrides)
     return DecisionOutput.model_validate(payload)
+
+
+@dataclass
+class FakeRouteResult:
+    user_message: str
+    wait_for_user_input: bool
+    should_continue: bool
+    session: dict[str, Any]
+    replaced_pending_research_result: bool = False
+    user_message_delivered: bool = False
 
 
 @pytest.mark.asyncio
@@ -125,7 +137,39 @@ async def test_app_keeps_new_pending_research_result_after_dispatch(tmp_path: Pa
 
 
 @pytest.mark.asyncio
-async def test_app_runs_recovery_check_when_pending_profile_updates_exist(tmp_path: Path) -> None:
+async def test_app_initialize_runs_recovery_check_once(tmp_path: Path) -> None:
+    calls: list[dict[str, object]] = []
+
+    class RecordingDocumentStore(DocumentStore):
+        def apply_pending_profile_updates(self, session: dict[str, object]) -> bool:
+            calls.append(session)
+            return super().apply_pending_profile_updates(session)
+
+    store = RecordingDocumentStore(base_dir=tmp_path / "data")
+    store.save_session(
+        {
+            "session_id": "2026-04-14-120000",
+            "pending_profile_updates": {"global_profile": {"lifestyle_tags": ["徒步"]}},
+        }
+    )
+
+    async def fake_research(task_type: str, payload: dict[str, object]):
+        raise AssertionError("research should not run")
+
+    app = ShoppingApplication(
+        store=store,
+        main_agent=FakeMainAgent([_decision(user_message="继续描述需求")]),
+        action_router=ActionRouter(store=store, research_executor=fake_research),
+    )
+
+    await app.initialize_session()
+
+    assert len(calls) == 1
+    assert calls[0]["session_id"] == "2026-04-14-120000"
+
+
+@pytest.mark.asyncio
+async def test_app_run_turn_does_not_repeat_recovery_check(tmp_path: Path) -> None:
     calls: list[dict[str, object]] = []
 
     class RecordingDocumentStore(DocumentStore):
@@ -152,8 +196,42 @@ async def test_app_runs_recovery_check_when_pending_profile_updates_exist(tmp_pa
 
     await app.run_turn("我想买徒步鞋")
 
-    assert len(calls) == 1
-    assert calls[0]["session_id"] == "2026-04-14-120000"
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_app_run_turn_passes_message_emitter_to_router(tmp_path: Path) -> None:
+    store = DocumentStore(base_dir=tmp_path / "data")
+    emitted: list[str] = []
+
+    class FakeRouter:
+        async def route(
+            self,
+            decision: DecisionOutput,
+            session: dict[str, Any],
+            *,
+            emit_user_message=None,
+        ) -> FakeRouteResult:
+            assert emit_user_message is not None
+            emit_user_message("搜索前消息")
+            return FakeRouteResult(
+                user_message="搜索前消息",
+                wait_for_user_input=False,
+                should_continue=True,
+                session=session,
+                user_message_delivered=True,
+            )
+
+    app = ShoppingApplication(
+        store=store,
+        main_agent=FakeMainAgent([_decision(next_action="dispatch_product_search")]),
+        action_router=FakeRouter(),  # type: ignore[arg-type]
+    )
+
+    result = await app.run_turn(None, emit_user_message=emitted.append)
+
+    assert emitted == ["搜索前消息"]
+    assert result.user_message_delivered is True
 
 
 @pytest.mark.asyncio

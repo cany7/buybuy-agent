@@ -87,10 +87,12 @@ async def test_router_rejects_unknown_session_update_keys(tmp_path: Path) -> Non
 @pytest.mark.asyncio
 async def test_router_dispatch_product_search_writes_pending_result_and_candidates(tmp_path: Path) -> None:
     store = DocumentStore(base_dir=tmp_path / "data")
+    events: list[str] = []
 
     async def fake_research(task_type: str, payload: dict[str, Any]) -> Any:
         from src.models.research import ProductSearchOutput
 
+        events.append("research")
         assert task_type == "dispatch_product_search"
         return ProductSearchOutput(
             products=[],
@@ -114,11 +116,14 @@ async def test_router_dispatch_product_search_writes_pending_result_and_candidat
             session_updates={"decision_progress": {"recommendation_round": "第一轮"}},
         ),
         {"session_id": "2026-04-14-100000"},
+        emit_user_message=lambda message: events.append(f"message:{message}"),
     )
 
     assert result.wait_for_user_input is False
     assert result.should_continue is True
     assert result.replaced_pending_research_result is True
+    assert result.user_message_delivered is True
+    assert events == ["message:继续补充信息。", "research"]
     assert result.session["pending_research_result"]["type"] == "product_search"
     assert result.session["candidate_products"]["notes"] == "搜索完成"
     assert result.session["decision_progress"]["recommendation_round"] == "未开始"
@@ -176,6 +181,25 @@ async def test_router_saves_pending_profile_updates_when_round_completes(tmp_pat
     )
 
     assert result.session["pending_profile_updates"]["global_profile"]["lifestyle_tags"] == ["徒步"]
+
+
+@pytest.mark.asyncio
+async def test_router_raises_when_round_completes_without_profile_updates(tmp_path: Path) -> None:
+    store = DocumentStore(base_dir=tmp_path / "data")
+
+    async def fake_research(task_type: str, payload: dict[str, Any]) -> Any:
+        raise AssertionError("research should not run")
+
+    router = ActionRouter(store=store, research_executor=fake_research)
+
+    with pytest.raises(ValueError, match="profile_updates is required"):
+        await router.route(
+            _decision(session_updates={"decision_progress": {"recommendation_round": "完成"}}),
+            {
+                "session_id": "2026-04-14-100000",
+                "decision_progress": {"recommendation_round": "第二轮"},
+            },
+        )
 
 
 @pytest.mark.asyncio
