@@ -18,6 +18,18 @@
 
 ## 2026-04-14
 
+### [implementation] 完成 P1.6 应用调度层
+- 文件：`src/app.py`、`src/router/action_router.py`、`tests/test_action_router.py`、`tests/test_app.py`
+- 变更：实现外部循环的最小应用层封装、session 自动创建、启动恢复检查入口、`session_updates` 白名单校验、`ask_user`/`recommend`/`dispatch_product_search`/`onboard_user` 的路由行为，以及产品搜索后的 `pending_research_result`、`candidate_products`、`recommendation_round` 与 `pending_profile_updates` 后处理。
+- 原因：按 `TASKS.md` 落地 Phase 1 的应用调度层主路径，使主 Agent 与研究 Agent 可以通过统一的 Action Router 串联起来。
+- 后续：P1.7 接入正式 `SessionContextProvider` 后，可替换 `app.py` 里的临时 context 组装逻辑；`dispatch_category_research` 在 P2.2 接通真实实现。
+
+### [implementation] 完成 P1.4-P1.5 Agent 基础定义
+- 文件：`src/agents/main_agent.py`、`src/agents/research_agent.py`、`src/agents/tools.py`、`src/agents/prompts.py`、`tests/test_main_agent.py`、`tests/test_research_agent.py`
+- 变更：实现主 Agent 的创建与运行封装，固定 `DecisionOutput` 结构化输出且不注册工具；实现研究 Agent 的 Tavily 搜索工具、产品搜索 prompt 渲染、payload 校验、基于 `global_profile.location` 的搜索语言注入，以及 `dispatch_product_search` 的异步执行入口。
+- 原因：继续按 `TASKS.md` 落地 Phase 1 的主 Agent 与研究 Agent 能力，同时保持 prompt 文本以 `docs/PROMPTS.md` 为单一来源。
+- 后续：P1.6 接入应用调度层后，再把 `execute_research()` 和主 Agent 封装串到外部循环与 Action Router 中。
+
 ### [implementation] 完成 P1.1-P1.3 基础落地
 - 文件：`pyproject.toml`、`.gitignore`、`src/`、`tests/`、`data/`、`docs/CHANGELOG.md`
 - 变更：新增 Phase 1 所需最小目录骨架与包初始化；补充 `pydantic`、`python-dotenv`、`tavily-python` 依赖；实现 `DecisionOutput` / `CategoryResearchOutput` / `ProductSearchOutput` 相关模型；实现仅覆盖 session 的 `DocumentStore`；新增对应单元测试。
