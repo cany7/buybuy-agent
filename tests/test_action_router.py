@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from src.models.decision import DecisionOutput
+from src.models.research import CategoryResearchOutput
 from src.router.action_router import ActionRouter
 from src.store.document_store import DocumentStore
 
@@ -221,3 +223,227 @@ async def test_router_onboard_user_writes_global_profile(tmp_path: Path) -> None
     profile_path = tmp_path / "data" / "user_profile" / "global_profile.json"
     saved = json.loads(profile_path.read_text(encoding="utf-8"))
     assert saved["demographics"]["location"] == "上海"
+
+
+@pytest.mark.asyncio
+async def test_router_dispatch_category_research_creates_knowledge_and_pending_result(tmp_path: Path) -> None:
+    store = DocumentStore(base_dir=tmp_path / "data")
+    events: list[str] = []
+
+    async def fake_research(task_type: str, payload: dict[str, Any]) -> Any:
+        events.append(task_type)
+        return CategoryResearchOutput.model_validate(
+            {
+                "category": "户外装备",
+                "category_knowledge": {
+                    "data_sources": ["https://example.com/guide"],
+                    "product_type_overview": [
+                        {
+                            "product_type": "冲锋衣",
+                            "subtypes": ["硬壳"],
+                            "description": "防水外层",
+                        }
+                    ],
+                    "shared_concepts": [
+                        {
+                            "name": "GORE-TEX",
+                            "description": "通用面料概念",
+                            "relevant_product_types": ["冲锋衣"],
+                        }
+                    ],
+                    "brand_landscape": [
+                        {
+                            "brand": "Arc'teryx",
+                            "positioning": "高端",
+                            "known_for": "硬壳",
+                        }
+                    ],
+                },
+                "product_type_name": "冲锋衣",
+                "product_type_knowledge": {
+                    "subtypes": {"硬壳": "强调防护"},
+                    "decision_dimensions": [
+                        {
+                            "name": "防水",
+                            "objectivity": "可量化",
+                            "importance": "高",
+                            "ambiguity_risk": "中",
+                        }
+                    ],
+                    "tradeoffs": [
+                        {
+                            "dimensions": ["防水", "透气"],
+                            "explanation": "需要平衡",
+                        }
+                    ],
+                    "price_tiers": [
+                        {
+                            "range": "2000-3000",
+                            "typical": "中高端",
+                            "features": "更完整的做工",
+                        }
+                    ],
+                    "scenario_mapping": [
+                        {
+                            "scenario": "周末徒步",
+                            "key_needs": ["防水", "透气"],
+                            "can_compromise": ["轻量"],
+                        }
+                    ],
+                    "common_misconceptions": [
+                        {
+                            "misconception": "越贵越好",
+                            "reality": "要看场景",
+                            "anchor_suggestion": "先确认天气和路线",
+                        }
+                    ],
+                },
+            }
+        )
+
+    router = ActionRouter(store=store, research_executor=fake_research)
+    result = await router.route(
+        _decision(
+            next_action="dispatch_category_research",
+            action_payload={
+                "category": "户外装备",
+                "product_type": "冲锋衣",
+                "user_context": "上海男性用户，想买冲锋衣",
+            },
+        ),
+        {"session_id": "2026-04-14-100000"},
+        emit_user_message=lambda message: events.append(f"message:{message}"),
+    )
+    knowledge = store.load_knowledge("户外装备")
+
+    assert result.should_continue is True
+    assert result.user_message_delivered is True
+    assert result.session["pending_research_result"]["type"] == "category_research"
+    assert knowledge is not None
+    assert knowledge["product_types"]["冲锋衣"]["decision_dimensions"][0]["name"] == "防水"
+    assert events == ["message:继续补充信息。", "dispatch_category_research"]
+
+
+@pytest.mark.asyncio
+async def test_router_dispatch_category_research_merges_new_product_type(tmp_path: Path) -> None:
+    store = DocumentStore(base_dir=tmp_path / "data")
+    store.save_knowledge(
+        "户外装备",
+        {
+            "category_knowledge": {
+                "shared_concepts": [{"name": "GORE-TEX"}],
+                "product_type_overview": [],
+                "data_sources": [],
+                "brand_landscape": [],
+            },
+            "product_types": {
+                "冲锋衣": {
+                    "decision_dimensions": [{"name": "防水"}],
+                    "tradeoffs": [],
+                    "price_tiers": [],
+                    "scenario_mapping": [],
+                    "common_misconceptions": [],
+                    "subtypes": {},
+                }
+            },
+        },
+    )
+
+    async def fake_research(task_type: str, payload: dict[str, Any]) -> Any:
+        return CategoryResearchOutput.model_validate(
+            {
+                "category": "户外装备",
+                "category_knowledge": {
+                    "data_sources": ["https://new.example.com"],
+                    "product_type_overview": [],
+                    "shared_concepts": [
+                        {
+                            "name": "不应覆盖原通用知识",
+                            "description": "测试现有通用知识不会被新调研结果覆盖。",
+                            "relevant_product_types": ["登山鞋"],
+                        }
+                    ],
+                    "brand_landscape": [],
+                },
+                "product_type_name": "登山鞋",
+                "product_type_knowledge": {
+                    "subtypes": {"中帮": "支撑更强"},
+                    "decision_dimensions": [
+                        {
+                            "name": "支撑",
+                            "objectivity": "半量化",
+                            "importance": "高",
+                            "ambiguity_risk": "低",
+                        }
+                    ],
+                    "tradeoffs": [],
+                    "price_tiers": [],
+                    "scenario_mapping": [],
+                    "common_misconceptions": [],
+                },
+            }
+        )
+
+    router = ActionRouter(store=store, research_executor=fake_research)
+    await router.route(
+        _decision(
+            next_action="dispatch_category_research",
+            action_payload={
+                "category": "户外装备",
+                "product_type": "登山鞋",
+                "user_context": "老用户，想买登山鞋",
+            },
+        ),
+        {"session_id": "2026-04-14-100000"},
+    )
+    knowledge = store.load_knowledge("户外装备")
+
+    assert knowledge is not None
+    assert knowledge["category_knowledge"]["shared_concepts"] == [{"name": "GORE-TEX"}]
+    assert knowledge["product_types"]["冲锋衣"]["decision_dimensions"][0]["name"] == "防水"
+    assert knowledge["product_types"]["登山鞋"]["decision_dimensions"][0]["name"] == "支撑"
+
+
+@pytest.mark.asyncio
+async def test_router_handles_invalid_next_action_without_crashing(tmp_path: Path) -> None:
+    store = DocumentStore(base_dir=tmp_path / "data")
+
+    async def fake_research(task_type: str, payload: dict[str, Any]) -> Any:
+        raise AssertionError("research should not run")
+
+    router = ActionRouter(store=store, research_executor=fake_research)
+    decision = SimpleNamespace(
+        user_message="系统暂时无法处理该动作。",
+        next_action="invalid_action",
+        action_payload=None,
+        session_updates=None,
+        profile_updates=None,
+    )
+
+    result = await router.route(decision, {"session_id": "2026-04-14-100000"})
+
+    assert result.should_continue is False
+    assert result.wait_for_user_input is True
+
+
+@pytest.mark.asyncio
+async def test_router_handles_invalid_product_search_payload_without_crashing(tmp_path: Path) -> None:
+    store = DocumentStore(base_dir=tmp_path / "data")
+    research_called = False
+
+    async def fake_research(task_type: str, payload: dict[str, Any]) -> Any:
+        nonlocal research_called
+        research_called = True
+        raise AssertionError("research should not run for invalid payload")
+
+    router = ActionRouter(store=store, research_executor=fake_research)
+    result = await router.route(
+        _decision(
+            next_action="dispatch_product_search",
+            action_payload=None,
+        ),
+        {"session_id": "2026-04-14-100000"},
+    )
+
+    assert research_called is False
+    assert result.should_continue is False

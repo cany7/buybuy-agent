@@ -8,6 +8,7 @@ from typing import Any, Callable, Protocol
 
 from src.agents.main_agent import create_main_agent
 from src.context.knowledge_provider import KnowledgeContextProvider
+from src.context.profile_provider import ProfileContextProvider
 from src.context.session_provider import SessionContextProvider
 from src.agents.research_agent import execute_research
 from src.models.decision import DecisionOutput
@@ -58,11 +59,15 @@ def build_phase_one_context(
     session: SessionState,
     *,
     session_provider: SessionContextProvider,
+    profile_provider: ProfileContextProvider,
     knowledge_provider: KnowledgeContextProvider,
 ) -> str:
     """Combine session and Phase 1 knowledge context blocks."""
 
     blocks = [session_provider.build_context(session)]
+    profile_context = profile_provider.build_context(session)
+    if profile_context:
+        blocks.extend(["", profile_context])
     knowledge_context = knowledge_provider.build_context(session)
     if knowledge_context:
         blocks.extend(["", knowledge_context])
@@ -87,11 +92,13 @@ class ShoppingApplication:
             research_executor=execute_research,
         )
         self.session_provider = SessionContextProvider(store=self.store)
+        self.profile_provider = ProfileContextProvider(store=self.store)
         self.knowledge_provider = KnowledgeContextProvider(store=self.store)
         self.context_builder = context_builder or (
             lambda session: build_phase_one_context(
                 session,
                 session_provider=self.session_provider,
+                profile_provider=self.profile_provider,
                 knowledge_provider=self.knowledge_provider,
             )
         )

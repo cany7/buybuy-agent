@@ -30,6 +30,12 @@ def load_main_agent_instructions() -> str:
     return _extract_markdown_code_block("### 1.2 完整 System Prompt 模板")
 
 
+def load_category_research_template() -> str:
+    """Load the category-research prompt template from docs."""
+
+    return _extract_markdown_code_block("### 2.1 品类调研模板（Category Research Template）")
+
+
 def load_product_search_template() -> str:
     """Load the product-search prompt template from docs."""
 

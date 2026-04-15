@@ -7,18 +7,23 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from typing import TypeVar
 
 from agent_framework import Agent
 from agent_framework.openai import OpenAIChatClient
 from dotenv import load_dotenv
+from pydantic import BaseModel
 
-from src.agents.prompts import load_product_search_template
+from src.agents.prompts import load_category_research_template, load_product_search_template
 from src.agents.tools import search_web
-from src.models.research import ProductSearchOutput
+from src.models.research import CategoryResearchOutput, ProductSearchOutput
+
+ResponseModelT = TypeVar("ResponseModelT", bound=BaseModel)
+ResearchOutput = CategoryResearchOutput | ProductSearchOutput
 
 SEARCH_INSTRUCTION_FOR_CHINA = (
     "搜索语言策略：以中文搜索为主，英文搜索为辅。中文搜索关键词应包含产品名称、评测、推荐等；"
-    "英文搜索关键词用于补充国际评测源（如 outdoorgearlab、wirecutter 等）。"
+    "英文搜索关键词用于补充国际评测源。"
 )
 SEARCH_INSTRUCTION_FOR_NON_CHINA = (
     "搜索语言策略：仅使用英文搜索。搜索关键词应包含产品名称、review、best、buying guide 等。"
@@ -109,6 +114,24 @@ def validate_product_search_payload(action_payload: dict[str, Any]) -> None:
         raise ValueError("constraints.budget must be null, 'unspecified', or a string.")
 
 
+def validate_category_research_payload(action_payload: dict[str, Any]) -> None:
+    """Validate the minimal payload shape required for dispatch_category_research."""
+
+    if not isinstance(action_payload, dict):
+        raise ValueError("action_payload must be a dict.")
+
+    category = action_payload.get("category")
+    product_type = action_payload.get("product_type")
+    user_context = action_payload.get("user_context")
+
+    if not isinstance(category, str) or not category.strip():
+        raise ValueError("action_payload.category is required.")
+    if not isinstance(product_type, str) or not product_type.strip():
+        raise ValueError("action_payload.product_type is required.")
+    if not isinstance(user_context, str) or not user_context.strip():
+        raise ValueError("action_payload.user_context is required.")
+
+
 def build_product_search_instructions(action_payload: dict[str, Any], location: str | None) -> str:
     """Render the product-search prompt template with payload fields."""
 
@@ -125,23 +148,43 @@ def build_product_search_instructions(action_payload: dict[str, Any], location: 
     )
 
 
+def build_category_research_instructions(action_payload: dict[str, Any], location: str | None) -> str:
+    """Render the category-research prompt template with payload fields."""
+
+    return load_category_research_template().format(
+        category=action_payload["category"],
+        product_type=action_payload["product_type"],
+        user_context=action_payload["user_context"],
+        search_language_instruction=get_search_language_instruction(location),
+    )
+
+
 @dataclass(slots=True)
 class ResearchAgentRunner:
     """Thin wrapper that fixes the research-agent output type."""
 
     agent: Agent
 
-    async def run(self, task_prompt: str) -> ProductSearchOutput:
-        """Run one research task and parse the response as ProductSearchOutput."""
+    async def run_structured(
+        self,
+        task_prompt: str,
+        response_format: type[ResponseModelT],
+    ) -> ResponseModelT:
+        """Run one research task and parse the response as the requested output model."""
 
         response = await self.agent.run(
             task_prompt,
-            options={"response_format": ProductSearchOutput},
+            options={"response_format": response_format},
         )
         value = response.value
         if value is None:
             raise ValueError("Research agent returned no structured output.")
         return value
+
+    async def run(self, task_prompt: str) -> ProductSearchOutput:
+        """Backward-compatible helper for product search tasks."""
+
+        return await self.run_structured(task_prompt, ProductSearchOutput)
 
 
 def create_research_agent(
@@ -164,19 +207,28 @@ async def execute_research(
     action_payload: dict[str, Any],
     *,
     client: Any | None = None,
-) -> ProductSearchOutput:
-    """Run a research task. Phase 1 supports only dispatch_product_search."""
+) -> ResearchOutput:
+    """Run a research task for product search or category research."""
 
-    if task_type != "dispatch_product_search":
-        raise ValueError("Phase 1 only supports dispatch_product_search.")
-
-    validate_product_search_payload(action_payload)
     global_profile = _load_global_profile() or {}
     location = global_profile.get("demographics", {}).get("location")
-    instructions = build_product_search_instructions(action_payload, location)
-    runner = create_research_agent(instructions=instructions, client=client)
 
-    task_prompt = (
-        "请根据提供的约束执行产品搜索，并严格按 ProductSearchOutput 返回结构化结果。"
-    )
-    return await runner.run(task_prompt)
+    if task_type == "dispatch_product_search":
+        validate_product_search_payload(action_payload)
+        instructions = build_product_search_instructions(action_payload, location)
+        task_prompt = (
+            "请根据提供的约束执行产品搜索，并严格按 ProductSearchOutput 返回结构化结果。"
+        )
+        response_format: type[ResearchOutput] = ProductSearchOutput
+    elif task_type == "dispatch_category_research":
+        validate_category_research_payload(action_payload)
+        instructions = build_category_research_instructions(action_payload, location)
+        task_prompt = (
+            "请根据提供的品类调研任务执行搜索，并严格按 CategoryResearchOutput 返回结构化结果。"
+        )
+        response_format = CategoryResearchOutput
+    else:
+        raise ValueError("Unsupported research task type.")
+
+    runner = create_research_agent(instructions=instructions, client=client)
+    return await runner.run_structured(task_prompt, response_format)

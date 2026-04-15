@@ -258,6 +258,179 @@ async def test_app_ignores_historical_sessions_when_current_session_missing(tmp_
     assert "goal_summary" not in result.session
 
 
+@pytest.mark.asyncio
+async def test_app_supports_basic_three_turn_ask_user_loop(tmp_path: Path) -> None:
+    store = DocumentStore(base_dir=tmp_path / "data")
+
+    async def fake_research(task_type: str, payload: dict[str, object]):
+        raise AssertionError("research should not run")
+
+    app = ShoppingApplication(
+        store=store,
+        main_agent=FakeMainAgent(
+            [
+                _decision(user_message="先说说用途", session_updates={"category": "户外装备"}),
+                _decision(user_message="预算大概多少", session_updates={"product_type": "冲锋衣"}),
+                _decision(
+                    user_message="还有其他偏好吗",
+                    session_updates={"goal_summary": "补齐徒步外层"},
+                ),
+            ]
+        ),
+        action_router=ActionRouter(store=store, research_executor=fake_research),
+    )
+
+    first = await app.run_turn("想买冲锋衣")
+    second = await app.run_turn("周末徒步")
+    third = await app.run_turn("预算3000")
+    saved_session = store.load_session()
+
+    assert first.user_message == "先说说用途"
+    assert second.user_message == "预算大概多少"
+    assert third.user_message == "还有其他偏好吗"
+    assert saved_session is not None
+    assert saved_session["category"] == "户外装备"
+    assert saved_session["product_type"] == "冲锋衣"
+    assert saved_session["goal_summary"] == "补齐徒步外层"
+
+
+@pytest.mark.asyncio
+async def test_app_multi_goal_flow_keeps_goal_context_and_refreshes_candidates(tmp_path: Path) -> None:
+    store = DocumentStore(base_dir=tmp_path / "data")
+    search_notes: list[str] = []
+
+    async def fake_research(task_type: str, payload: dict[str, object]):
+        from src.models.research import ProductSearchOutput
+
+        product_type = payload["product_type"]
+        note = f"{product_type} search"
+        search_notes.append(note)
+        return ProductSearchOutput(products=[], notes=note, suggested_followup=None)
+
+    app = ShoppingApplication(
+        store=store,
+        main_agent=FakeMainAgent(
+            [
+                _decision(
+                    user_message="先看外层。",
+                    next_action="dispatch_product_search",
+                    action_payload={
+                        "product_type": "冲锋衣",
+                        "search_goal": "外层搜索",
+                        "constraints": {
+                            "budget": "unspecified",
+                            "key_requirements": ["防水"],
+                            "exclusions": [],
+                        },
+                    },
+                    session_updates={
+                        "goal_summary": "补齐周末徒步装备",
+                        "existing_items": ["登山鞋"],
+                        "missing_items": ["冲锋衣", "背包"],
+                        "product_type": "冲锋衣",
+                    },
+                ),
+                _decision(
+                    user_message="外层先这样，接着看背包。",
+                    next_action="recommend",
+                    session_updates={
+                        "goal_summary": "补齐周末徒步装备",
+                        "existing_items": ["登山鞋"],
+                        "missing_items": ["冲锋衣", "背包"],
+                    },
+                ),
+                _decision(
+                    user_message="现在切到背包搜索。",
+                    next_action="dispatch_product_search",
+                    action_payload={
+                        "product_type": "背包",
+                        "search_goal": "背包搜索",
+                        "constraints": {
+                            "budget": None,
+                            "key_requirements": ["轻量"],
+                            "exclusions": [],
+                        },
+                    },
+                    session_updates={
+                        "goal_summary": "补齐周末徒步装备",
+                        "existing_items": ["登山鞋"],
+                        "missing_items": ["冲锋衣", "背包"],
+                        "product_type": "背包",
+                    },
+                ),
+                _decision(
+                    user_message="给出当前购买优先级。",
+                    next_action="recommend",
+                    session_updates={
+                        "goal_summary": "补齐周末徒步装备",
+                        "existing_items": ["登山鞋"],
+                        "missing_items": ["冲锋衣", "背包"],
+                    },
+                ),
+            ]
+        ),
+        action_router=ActionRouter(store=store, research_executor=fake_research),
+    )
+
+    await app.run_turn("帮我补齐周末徒步装备")
+    second = await app.run_turn(None)
+    third = await app.run_turn("那背包呢")
+    fourth = await app.run_turn(None)
+    saved_session = store.load_session()
+
+    assert second.user_message == "外层先这样，接着看背包。"
+    assert third.session["pending_research_result"]["result"]["notes"] == "背包 search"
+    assert fourth.user_message == "给出当前购买优先级。"
+    assert search_notes == ["冲锋衣 search", "背包 search"]
+    assert saved_session is not None
+    assert saved_session["goal_summary"] == "补齐周末徒步装备"
+    assert saved_session["existing_items"] == ["登山鞋"]
+    assert saved_session["missing_items"] == ["冲锋衣", "背包"]
+    assert saved_session["candidate_products"]["notes"] == "背包 search"
+    assert saved_session["product_type"] == "背包"
+
+
+@pytest.mark.asyncio
+async def test_app_initialize_applies_pending_profile_updates_to_long_term_store(tmp_path: Path) -> None:
+    store = DocumentStore(base_dir=tmp_path / "data")
+    store.save_session(
+        {
+            "session_id": "2026-04-15-100000",
+            "intent": "自用选购",
+            "category": "户外装备",
+            "decision_progress": {"recommendation_round": "完成"},
+            "error_state": {
+                "constraint_conflicts": [],
+                "consecutive_negative_feedback": 0,
+                "validation_warnings": [],
+            },
+            "pending_profile_updates": {
+                "global_profile": {"lifestyle_tags": ["徒步"]},
+                "category_preferences": {"primary_scenarios": ["周末徒步"]},
+            },
+        }
+    )
+
+    async def fake_research(task_type: str, payload: dict[str, object]):
+        raise AssertionError("research should not run")
+
+    app = ShoppingApplication(
+        store=store,
+        main_agent=FakeMainAgent([_decision(user_message="继续描述需求")]),
+        action_router=ActionRouter(store=store, research_executor=fake_research),
+    )
+
+    session = await app.initialize_session()
+    global_profile = store.load_global_profile()
+    category_preferences = store.load_category_preferences("户外装备")
+
+    assert "pending_profile_updates" not in session
+    assert global_profile is not None
+    assert global_profile["lifestyle_tags"] == ["徒步"]
+    assert category_preferences is not None
+    assert category_preferences["primary_scenarios"] == ["周末徒步"]
+
+
 def test_generate_session_id_matches_documented_format() -> None:
     session_id = generate_session_id()
 

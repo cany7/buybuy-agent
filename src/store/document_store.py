@@ -53,7 +53,15 @@ class DocumentStore:
         """Persist a complete session state and refresh last_updated."""
 
         payload = deepcopy(state)
-        payload["last_updated"] = datetime.now().isoformat(timespec="seconds")
+        explicit_last_updated = payload.get("last_updated")
+        if (
+            not self.current_session_path.exists()
+            and isinstance(explicit_last_updated, str)
+            and explicit_last_updated.strip()
+        ):
+            payload["last_updated"] = explicit_last_updated
+        else:
+            payload["last_updated"] = datetime.now().isoformat(timespec="seconds")
         self._write_json(self.current_session_path, payload)
 
     def list_historical_sessions(self) -> list[dict[str, Any]]:

@@ -18,6 +18,16 @@
 
 ## 2026-04-14
 
+### [implementation] 完成 P2.2 品类调研执行与后处理
+- 文件：`src/agents/prompts.py`、`src/agents/research_agent.py`、`src/router/action_router.py`、`tests/test_research_agent.py`、`tests/test_action_router.py`
+- 变更：扩展研究 Agent 支持 `dispatch_category_research`，加入品类调研 payload 校验、模板渲染与 `CategoryResearchOutput` 结构化执行；在 Action Router 中接通品类调研后处理，支持首次创建 knowledge 文档与向已有文档增量合并新的 `product_types.*` section，并写入 `pending_research_result`。
+- 原因：按 `TASKS.md` 落地 P2.2，为后续完整 KnowledgeContextProvider 和新品类/新品类目扩展提供真实的知识调研入口。
+
+### [fix] 补齐 P1/P2 上下文注入与 router 容错行为
+- 文件：`src/context/session_provider.py`、`src/context/knowledge_provider.py`、`src/context/profile_provider.py`、`src/app.py`、`src/router/action_router.py`、`src/store/document_store.py`
+- 变更：为 SessionContextProvider 增加超过 7 天的 staleness 标注与 pending 搜索结果过期提醒；将 KnowledgeContextProvider 改为按 `category + product_type` 选择性加载，并在缺失品类/产品类型知识时注入系统标注与已有 product_type 列表；新增 ProfileContextProvider 并接入默认应用上下文；ActionRouter 对非法 `next_action` 和非法 dispatch/onboarding payload 改为写入 `error_state.validation_warnings` 后返回，不再直接崩溃；同时允许首次写入 session 时保留显式 `last_updated`，以支持 staleness 测试初始化场景。
+- 原因：修复新补测试暴露出的上下文缺口与 router 容错不符合 `TESTING.md` 的问题，且不提前展开其他阶段功能。
+
 ### [fix] 修正 profile 恢复检查的原子性与 initialize_session 返回一致性
 - 文件：`src/store/document_store.py`、`src/app.py`、`tests/test_document_store_phase2.py`、`tests/test_app.py`
 - 变更：将 `apply_pending_profile_updates()` 改为先完整校验再提交，并在恢复失败时保持长期画像与 session 草稿原状，避免部分写入；`initialize_session()` 在执行恢复检查后重新加载 `current_session.json` 再返回，确保调用方拿到的是初始化后的最新 session。
