@@ -162,10 +162,11 @@ async def test_app_initialize_runs_recovery_check_once(tmp_path: Path) -> None:
         action_router=ActionRouter(store=store, research_executor=fake_research),
     )
 
-    await app.initialize_session()
+    session = await app.initialize_session()
 
     assert len(calls) == 1
     assert calls[0]["session_id"] == "2026-04-14-120000"
+    assert "pending_profile_updates" not in session
 
 
 @pytest.mark.asyncio

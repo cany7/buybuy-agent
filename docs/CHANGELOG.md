@@ -18,6 +18,21 @@
 
 ## 2026-04-14
 
+### [fix] 修正 profile 恢复检查的原子性与 initialize_session 返回一致性
+- 文件：`src/store/document_store.py`、`src/app.py`、`tests/test_document_store_phase2.py`、`tests/test_app.py`
+- 变更：将 `apply_pending_profile_updates()` 改为先完整校验再提交，并在恢复失败时保持长期画像与 session 草稿原状，避免部分写入；`initialize_session()` 在执行恢复检查后重新加载 `current_session.json` 再返回，确保调用方拿到的是初始化后的最新 session。
+- 原因：修复恢复检查中的状态不一致风险，确保启动阶段接口语义与实际持久化状态一致。
+
+### [fix] 实现 pending_profile_updates 的启动恢复写入逻辑
+- 文件：`src/store/document_store.py`、`tests/test_document_store_phase2.py`
+- 变更：将 `apply_pending_profile_updates()` 从 stub 扩展为真实恢复检查逻辑；在 intent 为 `自用选购`/`复购/换代`、推荐轮次为 `"完成"` 且 error_state 无明显异常时，正式写入 `global_profile.json` 和 `category_preferences/{category}.json`，随后清除 session 中的草稿；对 `送礼`、`纯咨询` 或异常状态则跳过并清除草稿。
+- 原因：修复之前遗留的 Phase 1 stub，避免阻塞 P2.4/P2.6 的恢复检查与长期画像写入。
+
+### [implementation] 完成 P2.1 DocumentStore 扩展
+- 文件：`src/store/document_store.py`、`tests/test_document_store_phase2.py`
+- 变更：在现有 session CRUD 基础上新增 knowledge/profile 的完整读写接口，支持知识文档选择性加载、product_type 增量合并，以及 global profile/category preferences 的 section 级替换更新；补充对应单元测试。
+- 原因：按 `TASKS.md` 落地 P2.1，为后续品类调研后处理、完整 ContextProviders 和 profile 持久化提供基础存储接口。
+
 ### [implementation] 完成 P1.10 端到端冒烟测试
 - 文件：`tests/test_phase1_smoke.py`、`docs/SMOKE_TEST_RECORD.md`
 - 变更：新增基于 CLI 的 Phase 1 端到端冒烟测试，使用真实 `run_cli()`、应用调度层、Action Router 和 DocumentStore，结合固定主 Agent/研究结果替身跑通冲锋衣场景的多轮闭环；补充本次执行记录。

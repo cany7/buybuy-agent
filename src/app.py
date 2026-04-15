@@ -113,7 +113,7 @@ class ShoppingApplication:
 
         session = self.load_or_create_active_session()
         self.run_recovery_check_if_needed(session)
-        return session
+        return self.load_or_create_active_session()
 
     async def run_turn(
         self,
