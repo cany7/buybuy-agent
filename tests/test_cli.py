@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 import pytest
 
 from src.cli import run_cli
+from src.store.document_store import DocumentStore
 
 
 @dataclass
@@ -59,6 +61,62 @@ async def test_cli_quit_preserves_session(monkeypatch, capsys) -> None:
     assert app.recovery_called is True
     assert app.initialized is True
     assert app.run_turn_calls == []
+
+
+@pytest.mark.asyncio
+async def test_cli_quit_keeps_current_session_file_and_contents(
+    monkeypatch,
+    capsys,
+    tmp_path: Path,
+) -> None:
+    store = DocumentStore(base_dir=tmp_path / "data")
+    store.save_session(
+        {
+            "session_id": "2026-04-16-101500",
+            "goal_summary": "保留当前会话",
+            "candidate_products": {
+                "products": [],
+                "notes": "保留中的候选池",
+            },
+            "decision_progress": {"recommendation_round": "第一轮"},
+        }
+    )
+
+    @dataclass
+    class SessionPreservingApp:
+        initialized: bool = False
+
+        def load_or_create_active_session(self) -> dict[str, str]:
+            session = store.load_session()
+            assert session is not None
+            return session
+
+        def run_recovery_check_if_needed(self, session: dict[str, str]) -> bool:
+            return False
+
+        async def initialize_session(self) -> dict[str, str]:
+            self.initialized = True
+            return self.load_or_create_active_session()
+
+        async def run_turn(self, user_input: str | None, emit_user_message=None) -> FakeTurnResult:
+            raise AssertionError("run_turn should not run when user exits immediately")
+
+    app = SessionPreservingApp()
+    inputs = iter(["/quit"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(inputs))
+
+    await run_cli(app)
+
+    output = capsys.readouterr().out
+    current_session = store.load_session()
+
+    assert "已退出，当前 session 已保留。" in output
+    assert current_session is not None
+    assert current_session["session_id"] == "2026-04-16-101500"
+    assert current_session["goal_summary"] == "保留当前会话"
+    assert current_session["candidate_products"]["notes"] == "保留中的候选池"
+    assert current_session["decision_progress"]["recommendation_round"] == "第一轮"
+    assert app.initialized is True
 
 
 @pytest.mark.asyncio

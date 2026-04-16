@@ -64,6 +64,20 @@ class DocumentStore:
             payload["last_updated"] = datetime.now().isoformat(timespec="seconds")
         self._write_json(self.current_session_path, payload)
 
+    def replace_active_session(
+        self,
+        state: dict[str, Any],
+        *,
+        preserve_current: bool = False,
+    ) -> None:
+        """Replace the active session, optionally preserving the current one as history."""
+
+        if preserve_current:
+            current = self.load_session()
+            if current is not None:
+                self.save_historical_session(current)
+        self.save_session(state)
+
     def list_historical_sessions(self) -> list[dict[str, Any]]:
         """Return all historical session documents except current_session."""
 
@@ -75,6 +89,15 @@ class DocumentStore:
             if data is not None:
                 sessions.append(data)
         return sessions
+
+    def save_historical_session(self, state: dict[str, Any]) -> None:
+        """Persist one session snapshot under its session_id without mutating current_session."""
+
+        session_id = state.get("session_id")
+        if not isinstance(session_id, str) or not session_id.strip():
+            raise ValueError("session.session_id is required when saving a historical session.")
+        payload = deepcopy(state)
+        self._write_json(self.sessions_dir / f"{session_id}.json", payload)
 
     def apply_pending_profile_updates(self, session: dict[str, Any]) -> bool:
         """Apply or discard pending profile updates during startup recovery."""

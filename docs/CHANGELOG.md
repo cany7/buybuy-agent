@@ -18,6 +18,24 @@
 
 ## 2026-04-16
 
+### [test] 补齐 P2.6 Session 生命周期的启动与退出覆盖
+- 文件：`tests/test_app.py`、`tests/test_cli.py`、`docs/CHANGELOG.md`
+- 变更：
+  1. 新增启动阶段测试，覆盖“仅存在历史 session、无 active session 时，系统创建新 active session 且不回注历史内容”
+  2. 新增 CLI 退出测试，直接断言 `/quit` 后 `current_session.json` 仍存在且关键字段内容完整保留
+- 原因：按 `docs/TESTING.md` 收口 P2.6 对应的 Session lifecycle 测试，避免仅依赖较重的 smoke case 间接覆盖
+- 后续：如果未来 CLI 增加“新开对话”命令，应继续补一条从 CLI 入口触发 `start_new_session` 的回归测试
+
+### [implementation] 完成 P2.6 的显式新会话切换与历史保留
+- 文件：`src/store/document_store.py`、`src/app.py`、`tests/test_document_store.py`、`tests/test_app.py`、`docs/CHANGELOG.md`
+- 变更：
+  1. 为 `DocumentStore` 新增 active session 切换能力，支持在覆盖 `current_session.json` 前把旧 active session 以 `{session_id}.json` 的形式保留为历史副本
+  2. 为应用层新增显式新开会话入口，在启动阶段先执行恢复检查，再根据请求创建新的 active session
+  3. 为新会话创建补充唯一 `session_id` 生成保护，避免与当前 active session 或已有历史文件冲突
+  4. 补充 `P2.6` 定向测试，覆盖“保留旧 active session 为历史”“启动恢复后再新开会话”两条关键路径
+- 原因：按 `TASKS.md` 收口 Session 生命周期管理中仍缺失的“显式开启新对话但保留旧 session”能力，同时保持启动恢复检查顺序符合架构文档
+- 后续：CLI 或其他入口若需要支持“新开对话”命令，应直接复用应用层新增入口，不要在上层重复实现 session 文件切换逻辑
+
 ### [test] 补齐 P2.4/P2.5 的恢复分支与 onboarding 集成覆盖
 - 文件：`tests/test_document_store_phase2.py`、`tests/test_app.py`、`docs/CHANGELOG.md`
 - 变更：

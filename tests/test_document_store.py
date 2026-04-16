@@ -108,6 +108,36 @@ def test_save_session_updates_current_session_without_touching_history(tmp_path)
     assert historical == [{"session_id": "2026-04-13-090000", "goal_summary": "旧会话"}]
 
 
+def test_replace_active_session_preserves_previous_current_as_history(tmp_path) -> None:
+    store = DocumentStore(base_dir=tmp_path / "data")
+    store.save_session(
+        {
+            "session_id": "2026-04-14-101500",
+            "goal_summary": "旧会话",
+            "decision_progress": {"recommendation_round": "完成"},
+        }
+    )
+
+    store.replace_active_session(
+        {
+            "session_id": "2026-04-14-111500",
+            "decision_progress": {"recommendation_round": "未开始"},
+        },
+        preserve_current=True,
+    )
+
+    current = store.load_session()
+    historical = store.list_historical_sessions()
+
+    assert current is not None
+    assert current["session_id"] == "2026-04-14-111500"
+    assert len(historical) == 1
+    assert historical[0]["session_id"] == "2026-04-14-101500"
+    assert historical[0]["goal_summary"] == "旧会话"
+    assert historical[0]["decision_progress"]["recommendation_round"] == "完成"
+    assert historical[0]["last_updated"]
+
+
 def test_apply_pending_profile_updates_returns_false_without_draft(tmp_path) -> None:
     store = DocumentStore(base_dir=tmp_path / "data")
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from typing import Any, Callable, Protocol
 
 from src.agents.main_agent import create_main_agent
@@ -14,6 +15,7 @@ from src.agents.research_agent import execute_research
 from src.models.decision import DecisionOutput
 from src.router.action_router import ActionRouter, RouteResult
 from src.store.document_store import DocumentStore
+from src.utils.session import generate_session_id
 
 SessionState = dict[str, Any]
 ContextBuilder = Callable[[SessionState], str]
@@ -108,6 +110,20 @@ class ShoppingApplication:
 
         return self.session_provider.load_or_create_session()
 
+    def create_new_active_session(self) -> SessionState:
+        """Create a new active session while preserving the current one as history."""
+
+        current_session = self.store.load_session()
+        new_session = self._build_new_session(existing_session=current_session)
+        self.store.replace_active_session(
+            new_session,
+            preserve_current=current_session is not None,
+        )
+        loaded = self.store.load_session()
+        if loaded is None:
+            raise ValueError("Failed to create a new active session.")
+        return loaded
+
     def run_recovery_check_if_needed(self, session: SessionState) -> bool:
         """Run startup-only recovery check for pending profile updates."""
 
@@ -115,11 +131,13 @@ class ShoppingApplication:
             return False
         return self.store.apply_pending_profile_updates(session)
 
-    async def initialize_session(self) -> SessionState:
+    async def initialize_session(self, *, start_new_session: bool = False) -> SessionState:
         """Load/create the active session and run startup-only recovery checks."""
 
         session = self.load_or_create_active_session()
         self.run_recovery_check_if_needed(session)
+        if start_new_session:
+            return self.create_new_active_session()
         return self.load_or_create_active_session()
 
     async def run_turn(
@@ -164,3 +182,21 @@ class ShoppingApplication:
             session.pop("pending_research_result", None)
             self.store.save_session(session)
         return session
+
+    def _build_new_session(self, existing_session: SessionState | None = None) -> SessionState:
+        existing_session_id = existing_session.get("session_id") if existing_session else None
+        return {
+            "session_id": self._generate_unique_session_id(existing_session_id),
+            "decision_progress": {"recommendation_round": "未开始"},
+        }
+
+    def _generate_unique_session_id(self, existing_session_id: object | None) -> str:
+        for offset in range(60):
+            candidate = generate_session_id(datetime.now() + timedelta(seconds=offset))
+            if candidate == existing_session_id:
+                continue
+            history_path = self.store.sessions_dir / f"{candidate}.json"
+            if history_path.exists():
+                continue
+            return candidate
+        raise ValueError("Failed to generate a unique session_id for the new active session.")

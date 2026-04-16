@@ -541,6 +541,80 @@ async def test_app_initialize_applies_pending_profile_updates_to_long_term_store
 
 
 @pytest.mark.asyncio
+async def test_app_initialize_creates_fresh_session_without_injecting_history(
+    tmp_path: Path,
+) -> None:
+    store = DocumentStore(base_dir=tmp_path / "data")
+    (store.sessions_dir / "2026-04-13-090000.json").write_text(
+        '{"session_id": "2026-04-13-090000", "goal_summary": "旧历史", "product_type": "冲锋衣"}\n',
+        encoding="utf-8",
+    )
+
+    async def fake_research(task_type: str, payload: dict[str, object]):
+        raise AssertionError("research should not run")
+
+    app = ShoppingApplication(
+        store=store,
+        main_agent=FakeMainAgent([_decision(user_message="继续描述需求")]),
+        action_router=ActionRouter(store=store, research_executor=fake_research),
+    )
+
+    session = await app.initialize_session()
+    historical_sessions = store.list_historical_sessions()
+
+    assert session["session_id"] != "2026-04-13-090000"
+    assert session["decision_progress"]["recommendation_round"] == "未开始"
+    assert "goal_summary" not in session
+    assert len(historical_sessions) == 1
+    assert historical_sessions[0]["session_id"] == "2026-04-13-090000"
+    assert historical_sessions[0]["goal_summary"] == "旧历史"
+
+
+@pytest.mark.asyncio
+async def test_app_initialize_can_start_new_session_while_preserving_previous_one(tmp_path: Path) -> None:
+    store = DocumentStore(base_dir=tmp_path / "data")
+    store.save_session(
+        {
+            "session_id": "2026-04-15-100000",
+            "intent": "自用选购",
+            "category": "户外装备",
+            "goal_summary": "继续上次选购",
+            "decision_progress": {"recommendation_round": "完成"},
+            "error_state": {
+                "constraint_conflicts": [],
+                "consecutive_negative_feedback": 0,
+                "validation_warnings": [],
+            },
+            "pending_profile_updates": {
+                "global_profile": {"lifestyle_tags": ["徒步"]},
+            },
+        }
+    )
+
+    async def fake_research(task_type: str, payload: dict[str, object]):
+        raise AssertionError("research should not run")
+
+    app = ShoppingApplication(
+        store=store,
+        main_agent=FakeMainAgent([_decision(user_message="继续描述需求")]),
+        action_router=ActionRouter(store=store, research_executor=fake_research),
+    )
+
+    new_session = await app.initialize_session(start_new_session=True)
+    historical_sessions = store.list_historical_sessions()
+    global_profile = store.load_global_profile()
+
+    assert new_session["session_id"] != "2026-04-15-100000"
+    assert new_session["decision_progress"]["recommendation_round"] == "未开始"
+    assert "goal_summary" not in new_session
+    assert len(historical_sessions) == 1
+    assert historical_sessions[0]["session_id"] == "2026-04-15-100000"
+    assert "pending_profile_updates" not in historical_sessions[0]
+    assert global_profile is not None
+    assert global_profile["lifestyle_tags"] == ["徒步"]
+
+
+@pytest.mark.asyncio
 async def test_app_onboarding_flow_writes_demographics_and_then_resumes_normal_dialogue(
     tmp_path: Path,
 ) -> None:
