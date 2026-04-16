@@ -28,7 +28,23 @@ def test_save_session_updates_last_updated_and_preserves_system_fields(tmp_path)
         "intent": "自用选购",
         "pending_research_result": {"type": "product_search", "result": {"notes": "x"}},
         "pending_profile_updates": {"global_profile": {"lifestyle_tags": ["徒步"]}},
-        "candidate_products": {"products": [], "notes": "none"},
+        "candidate_products": {
+            "products": [],
+            "search_meta": {
+                "retry_count": 0,
+                "result_status": "ok",
+                "search_expanded": False,
+                "expansion_notes": None,
+            },
+            "notes": "none",
+        },
+        "error_state": {
+            "constraint_conflicts": [],
+            "search_retries": 0,
+            "consecutive_negative_feedback": 0,
+            "validation_warnings": [],
+            "events": [{"type": "insufficient_results", "details": {"retry_count": 1}}],
+        },
     }
 
     store.save_session(state)
@@ -40,6 +56,8 @@ def test_save_session_updates_last_updated_and_preserves_system_fields(tmp_path)
     assert saved["pending_research_result"]["type"] == "product_search"
     assert "global_profile" in saved["pending_profile_updates"]
     assert saved["candidate_products"]["notes"] == "none"
+    assert saved["candidate_products"]["search_meta"]["result_status"] == "ok"
+    assert saved["error_state"]["events"][0]["type"] == "insufficient_results"
 
 
 def test_save_session_writes_utf8_json(tmp_path) -> None:

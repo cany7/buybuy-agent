@@ -196,6 +196,7 @@ while session.is_active:
 - **语义级约束冲突检查由主 Agent 在 dispatch 前完成**；`execute_research()` 仅做 payload 完整性和基础合法性的 sanity check
 - `recommend` 和 `ask_user` 是两个不同的 action，但系统层行为相同（都返回 user_message 给用户并等待输入），保留两个值是为了语义清晰和日志分析
 - `pending_research_result` 是一次性交接字段；`candidate_products` 是推荐周期内可持续复用的候选池，供两轮推荐共享
+- 对搭配/补齐/升级类任务，V1 采用**单焦点顺序推进**：`goal_summary` 保留整体目标，`product_type` 表示当前焦点，`candidate_products` 只保存当前焦点的一批候选，不承担多子问题并行候选池职责
 - 后置检查在每轮 action 路由之后执行，确保 `pending_research_result` 清理和 `recommendation_round = "完成"` 的草稿落盘不会被遗漏
 - `run_recovery_check_if_needed()` 是应用层确定性逻辑：若当前活跃 session 带有未应用的 `pending_profile_updates`，系统在下一次启动时先完成恢复检查，再决定是否写入长期画像
 
@@ -613,14 +614,14 @@ dispatch_product_search 完成后:
   1. Pydantic 结构校验（ProductSearchOutput）
   2. 将结果包装为 pending_research_result:
      { "type": "product_search", "result": {...} }
-  3. 将 ProductSearchOutput 刷新为 candidate_products（当前推荐周期候选池）
+  3. 将 ProductSearchOutput 刷新为 candidate_products（当前推荐周期候选池，仅对应当前研究焦点）
   4. 写入 session
   5. 自动重置 recommendation_round = "未开始"
   6. 回到外部循环步骤 1（系统自动触发下一轮推理）
 ```
 
 > [!IMPORTANT]
-> 品类调研结果需要**同时做两件事**：(1) 写入 knowledge 文件持久化 (2) 放入 pending_research_result 供主 Agent 下一轮读取。产品搜索结果则同时进入两层临时存储：`pending_research_result` 用于下一轮的一次性交接，`candidate_products` 用于两轮推荐期间的候选池复用。
+> 品类调研结果需要**同时做两件事**：(1) 写入 knowledge 文件持久化 (2) 放入 pending_research_result 供主 Agent 下一轮读取。产品搜索结果则同时进入两层临时存储：`pending_research_result` 用于下一轮的一次性交接，`candidate_products` 用于当前焦点下两轮推荐期间的候选池复用。
 
 ---
 
@@ -698,7 +699,7 @@ Instructions 保持策略规则全集，用阶段标题组织，LLM 根据 sessi
 不使用 MAF 的 middleware 抽象。V1 在应用调度层的主循环中直接做边界检查（详细阈值见 SPEC.md §13.1）。
 
 当前默认限制与 `SPEC.md` 保持一致：
-- `dispatch_category_research`：单 session 硬上限 2 次
+- `dispatch_category_research`：单 session 建议值 2 个不同 category；当已调研 2 个不同品类、准备进入第 3 个不同品类前给出软提示，并要求主 Agent 解释继续调研的必要性
 - `dispatch_product_search`：单 session 建议值 6 次，超出后给出软提示而非立即阻断
 
 ---

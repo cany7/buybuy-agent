@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -16,7 +15,7 @@ from src.agents.research_agent import (
     validate_category_research_payload,
     validate_product_search_payload,
 )
-from src.models.research import CategoryResearchOutput, ProductSearchOutput
+from src.models.research import CategoryResearchOutput, ProductSearchOutput, SearchMeta
 
 
 class DummyClient:
@@ -44,6 +43,15 @@ def _category_payload() -> dict[str, Any]:
         "product_type": "冲锋衣",
         "user_context": "男性用户，28岁，上海，想买一件适合徒步的冲锋衣。",
     }
+
+
+def _search_meta() -> SearchMeta:
+    return SearchMeta(
+        retry_count=0,
+        result_status="ok",
+        search_expanded=False,
+        expansion_notes=None,
+    )
 
 
 def test_validate_product_search_payload_accepts_unspecified_budget() -> None:
@@ -119,6 +127,7 @@ async def test_execute_research_creates_new_agent_each_call(monkeypatch, tmp_pat
             created_runners.append(self.instructions)
             return ProductSearchOutput(
                 products=[],
+                search_meta=_search_meta(),
                 notes=f"called with {task_prompt}",
                 suggested_followup="关注透气性",
             )
@@ -243,6 +252,7 @@ async def test_research_agent_runner_uses_product_search_output(monkeypatch) -> 
         return SimpleNamespace(
             value=ProductSearchOutput(
                 products=[],
+                search_meta=_search_meta(),
                 notes="搜索完成",
                 suggested_followup="补看重量",
             )
@@ -254,3 +264,10 @@ async def test_research_agent_runner_uses_product_search_output(monkeypatch) -> 
     assert result.notes == "搜索完成"
     assert captured["messages"] == "执行搜索"
     assert captured["options"]["response_format"] is ProductSearchOutput
+
+
+def test_product_search_output_schema_includes_search_meta() -> None:
+    schema = ProductSearchOutput.model_json_schema()
+
+    assert "search_meta" in schema["properties"]
+    assert "search_meta" in schema["required"]

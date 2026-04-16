@@ -18,6 +18,82 @@
 
 ## 2026-04-15
 
+### [fix] 修正品类调研软提示触发语义并恢复静态检查通过
+- 文件：`src/context/session_provider.py`、`tests/test_session_provider.py`、`tests/test_app.py`、`tests/test_action_router.py`、`tests/test_research_agent.py`、`src/agents/research_agent.py`、`docs/PROMPTS.md`、`docs/TESTING.md`、`docs/SPEC.md`、`docs/ARCHITECTURE.md`、`docs/CHANGELOG.md`
+- 变更：
+  1. 将品类调研软提示从“第 3 次调研完成后下一轮出现”修正为“已调研 2 个不同 category、准备进入第 3 个不同 category 前预先出现”
+  2. 将 `SessionContextProvider` 的统计口径从调研事件总数改为不同 `category` 去重计数，避免同品类补充调研误触发提示
+  3. 将相关 app / session provider 测试改为覆盖“第 3 个不同品类前预警”与重复 category 不重复计数
+  4. 将测试中的 `ProductSearchOutput.search_meta` 构造改为显式 `SearchMeta`，并删除未使用导入，恢复 `ruff` / `mypy` 通过
+- 原因：修复 review 发现的软提示时机偏晚、统计语义不准，以及 `search_meta` 强类型落地后测试未同步导致的静态检查回归
+
+### [docs] 收紧 search_meta source of truth 定义
+- 文件：`docs/INTERFACES.md`、`docs/SPEC.md`、`docs/TESTING.md`、`docs/CHANGELOG.md`
+- 变更：
+  1. 将 `INTERFACES.md` 中 `ProductSearchOutput.search_meta` 从宽松 `dict` 改为显式 `SearchMeta` 子模型
+  2. 将 `search_meta` 的描述从“推荐字段”收紧为“固定核心字段”，与当前产品逻辑、实现和测试口径一致
+  3. 在 SPEC / INTERFACES 中补齐 `search_failed` 作为 `error_state.events` 的正式事件示例
+  4. 在 TESTING 中补充 `SearchMeta.result_status` 枚举约束的校验要求
+- 原因：避免 source of truth 文档继续保留过宽定义，导致 prompt、测试或新调用点重新漂回自由结构
+
+### [implementation] 同步 search_meta 契约与品类调研软提示注入
+- 文件：`src/models/research.py`、`src/router/action_router.py`、`src/context/session_provider.py`、`tests/test_models.py`、`tests/test_action_router.py`、`tests/test_app.py`、`tests/test_research_agent.py`、`tests/test_document_store.py`、`tests/test_phase1_smoke.py`、`tests/test_session_provider.py`
+- 变更：
+  1. 为 `ProductSearchOutput` 增加结构化 `SearchMeta` 子模型，正式约束 `retry_count`、`result_status`、`search_expanded`、`expansion_notes`
+  2. 在 `ActionRouter` 的产品搜索后处理中，将 `search_meta` 稳定映射到 `error_state.search_retries` 和结构化 `events`
+  3. 在品类调研后处理里记录 `dispatch_category_research` 事件，供 `SessionContextProvider` 统计并在第 3 次及以上调研时注入系统软提示
+  4. 同步更新模型、router、app、document store、smoke 与 session provider 测试，覆盖新的 `search_meta` 契约和软提示出现时机
+- 原因：落实 2026-04-15 文档收口后的正式接口与系统侧提示行为，避免继续依赖 `notes` 文本猜测错误状态
+
+### [docs] 修复多子问题任务的关键漏洞并补充品类通用性说明
+- 文件：`docs/PROMPTS.md`、`docs/SPEC.md`、`docs/INTERFACES.md`
+- 变更：
+  1. **修复漏洞 1：全局约束缺失机制**
+     - 在 `PROMPTS.md` 推荐阶段新增"多子问题任务的全局约束管理"章节
+     - 明确要求在开始第一个子问题前识别全局约束（总预算、时间限制等）
+     - 要求基于品类知识给出预算分配建议并记录到 `goal_summary`
+     - 要求推荐时回顾全局约束，确保不破坏整体可行性
+  2. **修复漏洞 2：焦点切换时的决策连续性缺失**
+     - 在 `PROMPTS.md` 推荐阶段新增"焦点切换规则"章节
+     - 要求切换前在 `user_message` 中总结当前子问题状态
+     - 明确回看处理策略：优先从对话历史提取，必要时重新搜索
+  3. **修复漏洞 3：品类调研次数软提示语义不清**
+     - 在 `PROMPTS.md` 第零层新增"品类调研次数软限制"章节
+     - 明确软提示内容和主 Agent 应对方式
+     - 说明软提示不阻止调用，只要求在 `internal_reasoning` 中解释必要性
+  4. **修复漏洞 4：推荐前 review 机制缺失**
+     - 在 `PROMPTS.md` 推荐阶段新增"推荐前自检"章节
+     - 要求每次输出推荐前检查：硬约束匹配、全局约束、候选质量
+  5. **修复漏洞 5：`existing_items` 和 `missing_items` 使用时机不明确**
+     - 在 `PROMPTS.md` 需求挖掘阶段新增"已有物品和缺失项的询问时机"章节
+     - 明确何时询问、如何记录、如何使用
+  6. **修复模糊地带 1：多子问题任务的完成判定**
+     - 在 `PROMPTS.md` 会话收尾部分新增"多子问题任务的完成判定"章节
+     - 区分"阶段性完成"和"整体完成"
+     - 明确画像更新只在整体完成时触发
+  7. **修复模糊地带 2：`goal_summary` 格式自由度**
+     - 在 `PROMPTS.md` 需求挖掘阶段新增"goal_summary 的写入格式"章节
+     - 提供推荐格式和多个跨品类示例
+  8. **补充品类通用性说明**
+     - 在 `PROMPTS.md` 身份定位部分新增"品类范围说明"
+     - 在 `SPEC.md` §1.2 补充品类示例并新增 NOTE 说明系统不限制品类范围
+     - 在 `SPEC.md` §1.4 扩充任务形态示例，涵盖多个品类
+     - 在 `INTERFACES.md` 开头新增关于示例数据的说明
+- 原因：
+  - 通过系统性 review 发现多子问题任务存在 5 个关键漏洞和 2 个模糊地带
+  - 文档中使用户外装备作为示例可能导致误解系统局限于该品类
+- 后续：所有修复均为 prompt 层面的指导补充，不涉及 schema 或架构变更，可直接应用
+
+### [docs] 收口多目标任务语义并补齐搜索运行契约
+- 文件：`docs/SPEC.md`、`docs/PROMPTS.md`、`docs/INTERFACES.md`、`docs/ARCHITECTURE.md`、`docs/TESTING.md`、`docs/CHANGELOG.md`
+- 变更：
+  1. 将搭配/补齐/升级类任务的 V1 口径明确为“单焦点顺序推进”，保留 `goal_summary` 作为整体目标锚点，但将 `product_type` 和 `candidate_products` 明确为“当前焦点”语义，不再暗示并行候选池或跨焦点统一排序
+  2. 将 `dispatch_category_research` 从“单 session 硬上限 2 次”改为“建议值 2 次 + 软提示”，避免与合法的多子问题流程冲突
+  3. 为 `ProductSearchOutput` 新增结构化 `search_meta` 运行元信息，并在 SPEC / ARCHITECTURE / TESTING 中明确由应用层据此写入 `error_state.search_retries` 与相关 `events`
+  4. 清理搜索策略残留旧口径，将“搜索关键词基于用户所在城市决定”统一改回 `research_brief` 主导的语义决策
+- 原因：修复文档 review 中发现的范围-状态模型不一致、错误状态缺少结构化来源，以及搜索策略重构后仍有旧表述残留的问题
+- 后续：代码实现与测试用例需要同步到新的 `search_meta` 契约和“单焦点顺序推进”口径
+
 ### [implementation] 完成搜索策略重构的代码实现
 - 文件：`src/agents/research_agent.py`、`tests/test_research_agent.py`
 - 变更：

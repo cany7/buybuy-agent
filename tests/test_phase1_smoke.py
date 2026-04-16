@@ -153,10 +153,20 @@ async def test_phase1_cli_smoke_flow(tmp_path: Path, monkeypatch, capsys) -> Non
                     },
                     "error_state": {
                         "constraint_conflicts": [],
-                        "search_retries": 0,
+                        "search_retries": 1,
                         "consecutive_negative_feedback": 0,
                         "validation_warnings": [],
-                        "events": [],
+                        "events": [
+                            {
+                                "type": "partial_search_result",
+                                "details": {
+                                    "retry_count": 1,
+                                    "search_expanded": True,
+                                    "expansion_notes": "补充了英文评测后仍只保留两款高匹配候选",
+                                    "notes": "smoke search ok",
+                                },
+                            }
+                        ],
                     },
                 },
                 profile_updates={
@@ -203,6 +213,12 @@ async def test_phase1_cli_smoke_flow(tmp_path: Path, monkeypatch, capsys) -> Non
                     },
                 ],
                 "notes": "smoke search ok",
+                "search_meta": {
+                    "retry_count": 1,
+                    "result_status": "partial_results",
+                    "search_expanded": True,
+                    "expansion_notes": "补充了英文评测后仍只保留两款高匹配候选",
+                },
                 "suggested_followup": "关注耐用与重量的 tradeoff",
             }
         )
@@ -239,6 +255,9 @@ async def test_phase1_cli_smoke_flow(tmp_path: Path, monkeypatch, capsys) -> Non
     assert current_session is not None
     assert current_session["session_id"]
     assert current_session["candidate_products"]["notes"] == "smoke search ok"
+    assert current_session["candidate_products"]["search_meta"]["result_status"] == "partial_results"
+    assert current_session["error_state"]["search_retries"] == 1
+    assert current_session["error_state"]["events"][0]["type"] == "partial_search_result"
     assert current_session["pending_profile_updates"]["global_profile"]["lifestyle_tags"] == [
         "徒步",
         "周末户外",

@@ -3,12 +3,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 
 from src.models.decision import DecisionOutput
-from src.models.research import CategoryResearchOutput
+from src.models.research import CategoryResearchOutput, SearchMeta
 from src.router.action_router import ActionRouter
 from src.store.document_store import DocumentStore
 
@@ -24,6 +24,21 @@ def _decision(**overrides: Any) -> DecisionOutput:
     }
     payload.update(overrides)
     return DecisionOutput.model_validate(payload)
+
+
+def _search_meta(
+    *,
+    retry_count: int,
+    result_status: Literal["ok", "insufficient_results", "partial_results", "failed"],
+    search_expanded: bool,
+    expansion_notes: str | None,
+) -> SearchMeta:
+    return SearchMeta(
+        retry_count=retry_count,
+        result_status=result_status,
+        search_expanded=search_expanded,
+        expansion_notes=expansion_notes,
+    )
 
 
 @pytest.mark.asyncio
@@ -98,6 +113,12 @@ async def test_router_dispatch_product_search_writes_pending_result_and_candidat
         assert task_type == "dispatch_product_search"
         return ProductSearchOutput(
             products=[],
+            search_meta=_search_meta(
+                retry_count=1,
+                result_status="insufficient_results",
+                search_expanded=True,
+                expansion_notes="已放宽预算范围",
+            ),
             notes="搜索完成",
             suggested_followup="比较重量",
         )
@@ -128,6 +149,9 @@ async def test_router_dispatch_product_search_writes_pending_result_and_candidat
     assert events == ["message:继续补充信息。", "research"]
     assert result.session["pending_research_result"]["type"] == "product_search"
     assert result.session["candidate_products"]["notes"] == "搜索完成"
+    assert result.session["candidate_products"]["search_meta"]["retry_count"] == 1
+    assert result.session["error_state"]["search_retries"] == 1
+    assert result.session["error_state"]["events"][0]["type"] == "insufficient_results"
     assert result.session["decision_progress"]["recommendation_round"] == "未开始"
 
 
@@ -140,7 +164,17 @@ async def test_router_dispatch_product_search_accepts_null_budget(tmp_path: Path
 
         assert task_type == "dispatch_product_search"
         assert payload["constraints"]["budget"] is None
-        return ProductSearchOutput(products=[], notes="搜索完成", suggested_followup=None)
+        return ProductSearchOutput(
+            products=[],
+            search_meta=_search_meta(
+                retry_count=0,
+                result_status="ok",
+                search_expanded=False,
+                expansion_notes=None,
+            ),
+            notes="搜索完成",
+            suggested_followup=None,
+        )
 
     router = ActionRouter(store=store, research_executor=fake_research)
     result = await router.route(
@@ -161,6 +195,95 @@ async def test_router_dispatch_product_search_accepts_null_budget(tmp_path: Path
 
     assert result.should_continue is True
     assert result.session["pending_research_result"]["result"]["notes"] == "搜索完成"
+    assert result.session["error_state"]["search_retries"] == 0
+
+
+@pytest.mark.asyncio
+async def test_router_maps_partial_search_meta_to_error_state_event(tmp_path: Path) -> None:
+    store = DocumentStore(base_dir=tmp_path / "data")
+
+    async def fake_research(task_type: str, payload: dict[str, Any]) -> Any:
+        from src.models.research import ProductSearchOutput
+
+        return ProductSearchOutput(
+            products=[],
+            search_meta=_search_meta(
+                retry_count=2,
+                result_status="partial_results",
+                search_expanded=True,
+                expansion_notes="仅补到部分规格",
+            ),
+            notes="来源覆盖不完整",
+            suggested_followup="向用户确认是否接受部分结果",
+        )
+
+    router = ActionRouter(store=store, research_executor=fake_research)
+    result = await router.route(
+        _decision(
+            next_action="dispatch_product_search",
+            action_payload={
+                "product_type": "跑鞋",
+                "search_goal": "测试部分结果",
+                "constraints": {
+                    "budget": None,
+                    "key_requirements": ["缓震"],
+                    "exclusions": [],
+                },
+            },
+        ),
+        {"session_id": "2026-04-14-100000"},
+    )
+
+    assert result.session["error_state"]["search_retries"] == 2
+    assert result.session["error_state"]["events"][0]["type"] == "partial_search_result"
+
+
+@pytest.mark.asyncio
+async def test_router_dispatch_category_research_records_dispatch_event(tmp_path: Path) -> None:
+    store = DocumentStore(base_dir=tmp_path / "data")
+
+    async def fake_research(task_type: str, payload: dict[str, Any]) -> Any:
+        return CategoryResearchOutput.model_validate(
+            {
+                "category": "户外装备",
+                "category_knowledge": {
+                    "data_sources": ["https://example.com/guide"],
+                    "product_type_overview": [
+                        {
+                            "product_type": "冲锋衣",
+                            "subtypes": ["硬壳"],
+                            "description": "防水外层",
+                        }
+                    ],
+                    "shared_concepts": [],
+                    "brand_landscape": [],
+                },
+                "product_type_name": "冲锋衣",
+                "product_type_knowledge": {
+                    "subtypes": {"硬壳": "强调防护"},
+                    "decision_dimensions": [],
+                    "tradeoffs": [],
+                    "price_tiers": [],
+                    "scenario_mapping": [],
+                    "common_misconceptions": [],
+                },
+            }
+        )
+
+    router = ActionRouter(store=store, research_executor=fake_research)
+    result = await router.route(
+        _decision(
+            next_action="dispatch_category_research",
+            action_payload={
+                "category": "户外装备",
+                "product_type": "冲锋衣",
+                "user_context": "测试上下文",
+            },
+        ),
+        {"session_id": "2026-04-14-100000"},
+    )
+
+    assert result.session["error_state"]["events"][0]["type"] == "dispatch_category_research"
 
 
 @pytest.mark.asyncio
@@ -319,6 +442,7 @@ async def test_router_dispatch_category_research_creates_knowledge_and_pending_r
     assert result.should_continue is True
     assert result.user_message_delivered is True
     assert result.session["pending_research_result"]["type"] == "category_research"
+    assert result.session["error_state"]["events"][0]["type"] == "dispatch_category_research"
     assert knowledge is not None
     assert knowledge["product_types"]["冲锋衣"]["decision_dimensions"][0]["name"] == "防水"
     assert events == ["message:继续补充信息。", "dispatch_category_research"]

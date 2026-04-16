@@ -3,6 +3,8 @@
 > 本文档定义所有组件间的接口契约：Pydantic 模型（Agent 输出）和 JSON Schema（持久化数据）。是 PROMPTS.md 和实现代码的权威参考。
 >
 > **Pydantic vs JSON 分界**：Pydantic 只覆盖 "LLM → 应用层" 的接口（`DecisionOutput`、`CategoryResearchOutput`、`ProductSearchOutput`）。持久化数据（session / knowledge / profile）使用 Plain JSON dict，Schema 在本文档中定义为文档约定。
+>
+> **关于示例数据**：本文档中的示例使用了多个品类（户外装备、数码产品、智能家居等）来说明数据结构。这些示例仅为说明性案例，系统不限制品类范围，适用于任何符合产品定位的消费品类。
 
 ---
 
@@ -191,9 +193,18 @@ class ProductInfo(BaseModel):
     source_consistency: str = Field(description="high | medium | low")
 
 
+class SearchMeta(BaseModel):
+    """产品搜索任务的结构化运行元信息"""
+    retry_count: int
+    result_status: Literal["ok", "insufficient_results", "partial_results", "failed"]
+    search_expanded: bool
+    expansion_notes: Optional[str] = None
+
+
 class ProductSearchOutput(BaseModel):
     """产品搜索任务的结构化输出"""
     products: list[ProductInfo] = []
+    search_meta: SearchMeta                     # 搜索执行元信息（固定结构，供应用层稳定消费）
     notes: str                                  # 搜索过程说明/限制
     suggested_followup: Optional[str] = None    # 建议主 Agent 注意的点
 ```
@@ -202,6 +213,12 @@ class ProductSearchOutput(BaseModel):
 > **`features` 字段必须包含产品功能/特点的完整介绍**，确保主 Agent 在后续对话中不需要为了回答"这款的 XX 功能怎么样"而重新发起搜索。这是研究 Agent prompt 模板中的硬性要求。
 >
 > **`price` 字段使用结构化对象而非单一 `float`**：这样既能保留原始价格展示文本，也能兼容不同币种、区间价格、MSRP/到手价差异，以及“暂缺精确价格”的场景。若来源给出明确单值，可在 `amount` 中提供便于比较的数值；否则至少保留 `display`。
+>
+> **`search_meta` 是应用层记录搜索运行状态的结构化来源**，避免从 `notes` 自由文本中反推重试次数、结果状态或是否放宽搜索范围。它是 `ProductSearchOutput` 的固定子模型，至少包含以下核心字段：
+> - `retry_count`: `int`
+> - `result_status`: `"ok" | "insufficient_results" | "partial_results" | "failed"`
+> - `search_expanded`: `bool`
+> - `expansion_notes`: `str | null`
 
 ---
 
@@ -595,7 +612,7 @@ class ProductSearchOutput(BaseModel):
 | `session_id` | string | 格式 `{date}-{HHMMSS}`，如 `"2026-04-10-143052"` |
 | `last_updated` | string | ISO 时间戳，应用层每轮写入时自动更新 |
 | `intent` | string | 用户意图（自用选购/送礼/复购/纯咨询） |
-| `product_type` | string | 当前轮的主要产品焦点；在搭配/补齐/升级类任务中，它表示当前正在处理的子问题，可随编排过程变化，而不是整个任务的唯一中心 |
+| `product_type` | string | 当前轮的主要产品焦点；在搭配/补齐/升级类任务中，它表示当前顺序推进到的单个子问题，可随编排过程变化，但同一时刻只表示一个当前焦点 |
 | `category` | string | 当前咨询的大品类 |
 | `decision_progress` | object | 决策推进状态（stage / blocker / recommendation_round） |
 | `requirement_profile` | object | 需求画像快照（basic_info + dimension_weights） |
@@ -611,7 +628,7 @@ class ProductSearchOutput(BaseModel):
 | `missing_items` | list[string] | 当前任务直接相关的待补缺项，仅按需记录 |
 | `pending_research_result` | object | 研究 Agent 输出的一次性交接结果，系统在主 Agent 完成下一轮消费后清除 |
 | `pending_profile_updates` | object | 推荐完成后生成的长期画像更新草稿，等待下次启动恢复检查决定是否正式应用 |
-| `candidate_products` | object | 当前推荐周期的活动候选池，承载当前研究焦点下的产品搜索初筛结果；在搭配/补齐类任务中可被多次刷新或局部替换，供阶段性建议和两轮推荐复用 |
+| `candidate_products` | object | 当前推荐周期的活动候选池，承载当前研究焦点下的产品搜索初筛结果；在搭配/补齐类任务中，它始终只对应当前焦点的候选，不承担多子问题并行保留或跨焦点统一比较的职责 |
 
 **`error_state` 扩展结构**：
 
@@ -625,7 +642,7 @@ class ProductSearchOutput(BaseModel):
 }
 ```
 
-> 固定核心字段用于统计和验收；额外异常事件（如 `insufficient_results`）统一进入 `events` 数组。
+> 固定核心字段用于统计和验收；额外异常事件（如 `insufficient_results`、`partial_search_result`、`search_failed`）统一进入 `events` 数组。
 
 **`pending_research_result` 结构**：
 
@@ -641,6 +658,12 @@ class ProductSearchOutput(BaseModel):
 ```json
 {
   "products": [{ "...": "ProductInfo" }],
+  "search_meta": {
+    "retry_count": 1,
+    "result_status": "insufficient_results",
+    "search_expanded": true,
+    "expansion_notes": "已将预算范围放宽约 30% 后再次搜索"
+  },
   "notes": "[搜索说明]",
   "suggested_followup": "[可选的后续建议]",
   "last_refreshed": "[ISO 时间戳]"
@@ -650,7 +673,8 @@ class ProductSearchOutput(BaseModel):
 > [!NOTE]
 > - `candidate_products` 保存的是**研究 Agent 初筛后的候选池**（通常 5-7 款）
 > - 它不是主 Agent 当轮已推荐给用户的 3-5 款子集
-> - 对单品任务，它通常对应一个产品类型的候选池；对搭配/补齐类任务，它可以随着当前焦点变化被多次刷新，不要求整个会话只有唯一一批候选
+> - 对单品任务，它通常对应一个产品类型的候选池；对搭配/补齐类任务，它可以随着当前焦点变化被多次刷新，但**一次只保留当前焦点的一批候选**
+> - V1 的多目标任务按“单焦点顺序推进”设计：`candidate_products` 不承载多个 product_type 的并行候选池，也不负责跨焦点回看与统一排序
 > - 它由系统在 `dispatch_product_search` 后处理时刷新，不通过 `session_updates` 由 LLM 写入
 
 **`pending_profile_updates` 结构**：

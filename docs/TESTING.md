@@ -56,7 +56,9 @@
 | `PriceInfo` 最小实例化 | 仅传 `display` | 成功创建实例 |
 | `PriceInfo` 扩展实例化 | 传 `display + currency + amount` | 成功创建实例 |
 | `ProductInfo` 完整实例化 | 传入所有必填字段（`price` 为结构化对象） | 成功创建实例 |
-| `ProductSearchOutput` 空列表 | `products=[]` | 允许（搜索无结果时的合法状态） |
+| `ProductSearchOutput` 必填运行元信息 | 缺少 `search_meta` | 抛出 ValidationError |
+| `SearchMeta` 枚举约束 | `result_status` 不在 `"ok" / "insufficient_results" / "partial_results" / "failed"` 中 | 抛出 ValidationError |
+| `ProductSearchOutput` 空列表 | `products=[]` 且提供合法 `search_meta` | 允许（搜索无结果时的合法状态） |
 | `CategoryResearchOutput` 序列化 | 完整实例 → `.model_dump()` → JSON | JSON 结构正确 |
 
 ---
@@ -131,6 +133,7 @@
 | 非法 `next_action` | 不在枚举中的值 | 记录错误，不崩溃 |
 | 非法 payload 格式 | `dispatch_product_search` 缺少必要字段 | 记录错误，不崩溃 |
 | `candidate_products` 刷新 | `dispatch_product_search` 后处理 | 保存 research agent 初筛候选池 |
+| 研究搜索元信息映射 | `ProductSearchOutput.search_meta` 表示重试/扩搜/结果状态 | 应用层稳定写入 `error_state.search_retries` 与 `events` |
 | `pending_research_result` 清除 | 上一轮存在 pending 且本轮已消费 | 后置检查后被移除 |
 | 后置检查：画像草稿 | `recommendation_round` 从非完成变为 `"完成"` | 写入 `pending_profile_updates` 草稿 |
 | 恢复检查：送礼 | `intent="送礼"` 且存在 `pending_profile_updates` | 跳过自用画像更新 |
@@ -141,7 +144,7 @@
 | 测试用例 | 验证内容 | 预期结果 |
 |---------|---------|---------|
 | 最大轮数 | 第 30 轮后 | 提示用户并保留当前 session |
-| 品类调研上限 | 第 3 次 `dispatch_category_research` | 拒绝新的品类调研 |
+| 品类调研建议次数 | 已调研 2 个不同 category 后，准备进入第 3 个不同 category | 预先触发软提示，要求优先复用已有 knowledge 或解释继续调研的必要性 |
 | 产品搜索建议次数 | 第 7 次 `dispatch_product_search` | 给出软提示 |
 | 阈值可配置 | 修改配置值 | 按新阈值执行 |
 
@@ -159,7 +162,7 @@
 |---------|-------------|---------|
 | 基本对话循环 | `ask_user` × 3 | session state 每轮更新，用户消息正确返回 |
 | Dispatch 流程 | `ask_user` → `dispatch_product_search` → `recommend` | 研究 Agent 被调用 → pending_research_result 设置 → candidate_products 刷新 → 下一轮消费 → 清除 pending |
-| 多目标任务流程 | `ask_user` → `dispatch_product_search` → `recommend` → `dispatch_product_search` → `recommend` | 同一购物目标下允许多次搜索；`goal_summary` / `existing_items` / `missing_items` 保持连续；`candidate_products` 可被刷新后继续复用 |
+| 多目标任务流程 | `ask_user` → `dispatch_product_search` → `recommend` → `dispatch_product_search` → `recommend` | 同一购物目标下允许多次搜索；`goal_summary` / `existing_items` / `missing_items` 保持连续；`candidate_products` 作为当前焦点候选池被顺序刷新 |
 | 推荐完成生成画像草稿 | `recommend`（recommendation_round="完成"，含 profile_updates） | `pending_profile_updates` 被写入 session |
 | 重启后应用画像草稿 | 启动时发现未应用的 `pending_profile_updates` | 恢复检查通过后更新 global_profile 和 category_preferences |
 | Onboarding → 正常对话 | `onboard_user` → `ask_user` → ... | demographics 写入后正常对话继续 |
@@ -170,7 +173,7 @@
 |---------|---------|
 | 品类调研后处理 | 知识文档正确创建/合并 + `pending_research_result` 设置 |
 | 产品搜索后处理 | `pending_research_result` 设置 + `candidate_products` 刷新 + `recommendation_round` 重置 |
-| 多次产品搜索后处理 | 连续两次 `dispatch_product_search` | 新一轮 research 结果正确覆盖 `pending_research_result`，`candidate_products` 按当前研究焦点刷新，`recommendation_round` 每次都重置 |
+| 多次产品搜索后处理 | 连续两次 `dispatch_product_search` | 新一轮 research 结果正确覆盖 `pending_research_result`，`candidate_products` 按当前研究焦点顺序刷新，`recommendation_round` 每次都重置 |
 | 研究 Agent 返回空结果 | 不崩溃，`pending_research_result` 包含空结果 + notes |
 | payload sanity check | payload 缺少必填字段时不调用研究 Agent |
 
@@ -417,7 +420,7 @@ assert result.next_action == "ask_user"
 - [ ] session 中正确记录 `goal_summary`、`existing_items`、`missing_items`
 - [ ] 同一购物目标下允许两次 `dispatch_product_search`
 - [ ] 第二次搜索前，`product_type` 焦点可以切换，但 `goal_summary` 保持连续
-- [ ] `candidate_products` 在第二次搜索后按当前研究焦点刷新
+- [ ] `candidate_products` 在第二次搜索后按当前研究焦点刷新，而不是并行保留上一焦点的候选
 - [ ] 输出可以是阶段性建议 / 购买优先级，而不是强行给出单品式终局推荐
 - [ ] 产品搜索正确触发
 - [ ] `candidate_products` 在第一轮推荐后仍保留，第二轮可复用

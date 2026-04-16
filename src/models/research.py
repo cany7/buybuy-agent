@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -122,9 +124,19 @@ class ProductInfo(BaseModel):
     source_consistency: str = Field(description="high | medium | low")
 
 
+class SearchMeta(BaseModel):
+    """Structured runtime metadata for a product search task."""
+
+    retry_count: int
+    result_status: Literal["ok", "insufficient_results", "partial_results", "failed"]
+    search_expanded: bool
+    expansion_notes: str | None = None
+
+
 class ProductSearchOutput(BaseModel):
     """Structured output for product search tasks."""
 
     products: list[ProductInfo] = Field(default_factory=list)
+    search_meta: SearchMeta
     notes: str
     suggested_followup: str | None = None

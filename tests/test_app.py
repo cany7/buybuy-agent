@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 
 from src.app import ShoppingApplication
 from src.models.decision import DecisionOutput
+from src.models.research import SearchMeta
 from src.router.action_router import ActionRouter
 from src.store.document_store import DocumentStore
 from src.utils.session import generate_session_id
@@ -43,6 +44,21 @@ class FakeRouteResult:
     session: dict[str, Any]
     replaced_pending_research_result: bool = False
     user_message_delivered: bool = False
+
+
+def _search_meta(
+    *,
+    retry_count: int = 0,
+    result_status: Literal["ok", "insufficient_results", "partial_results", "failed"] = "ok",
+    search_expanded: bool = False,
+    expansion_notes: str | None = None,
+) -> SearchMeta:
+    return SearchMeta(
+        retry_count=retry_count,
+        result_status=result_status,
+        search_expanded=search_expanded,
+        expansion_notes=expansion_notes,
+    )
 
 
 @pytest.mark.asyncio
@@ -107,7 +123,12 @@ async def test_app_keeps_new_pending_research_result_after_dispatch(tmp_path: Pa
     async def fake_research(task_type: str, payload: dict[str, object]):
         from src.models.research import ProductSearchOutput
 
-        return ProductSearchOutput(products=[], notes="new", suggested_followup=None)
+        return ProductSearchOutput(
+            products=[],
+            search_meta=_search_meta(),
+            notes="new",
+            suggested_followup=None,
+        )
 
     app = ShoppingApplication(
         store=store,
@@ -305,7 +326,12 @@ async def test_app_multi_goal_flow_keeps_goal_context_and_refreshes_candidates(t
         product_type = payload["product_type"]
         note = f"{product_type} search"
         search_notes.append(note)
-        return ProductSearchOutput(products=[], notes=note, suggested_followup=None)
+        return ProductSearchOutput(
+            products=[],
+            search_meta=_search_meta(),
+            notes=note,
+            suggested_followup=None,
+        )
 
     app = ShoppingApplication(
         store=store,
@@ -388,6 +414,89 @@ async def test_app_multi_goal_flow_keeps_goal_context_and_refreshes_candidates(t
     assert saved_session["missing_items"] == ["冲锋衣", "背包"]
     assert saved_session["candidate_products"]["notes"] == "背包 search"
     assert saved_session["product_type"] == "背包"
+
+
+@pytest.mark.asyncio
+async def test_app_injects_soft_note_before_third_distinct_category_research(tmp_path: Path) -> None:
+    store = DocumentStore(base_dir=tmp_path / "data")
+    captured_contexts: list[str] = []
+
+    @dataclass
+    class RecordingMainAgent:
+        decisions: list[DecisionOutput]
+
+        async def run(self, context: str, user_message: str) -> DecisionOutput:
+            captured_contexts.append(context)
+            return self.decisions.pop(0)
+
+    async def fake_research(task_type: str, payload: dict[str, object]):
+        from src.models.research import CategoryResearchOutput
+
+        return CategoryResearchOutput.model_validate(
+            {
+                "category": payload["category"],
+                "category_knowledge": {
+                    "data_sources": ["https://example.com/guide"],
+                    "product_type_overview": [],
+                    "shared_concepts": [],
+                    "brand_landscape": [],
+                },
+                "product_type_name": payload["product_type"],
+                "product_type_knowledge": {
+                    "subtypes": {},
+                    "decision_dimensions": [],
+                    "tradeoffs": [],
+                    "price_tiers": [],
+                    "scenario_mapping": [],
+                    "common_misconceptions": [],
+                },
+            }
+        )
+
+    app = ShoppingApplication(
+        store=store,
+        main_agent=RecordingMainAgent(
+            [
+                _decision(
+                    next_action="dispatch_category_research",
+                    action_payload={
+                        "category": "户外装备",
+                        "product_type": "冲锋衣",
+                        "user_context": "第一次调研",
+                    },
+                ),
+                _decision(
+                    next_action="dispatch_category_research",
+                    action_payload={
+                        "category": "数码产品",
+                        "product_type": "耳机",
+                        "user_context": "第二次调研",
+                    },
+                ),
+                _decision(
+                    next_action="dispatch_category_research",
+                    action_payload={
+                        "category": "智能家居",
+                        "product_type": "扫地机器人",
+                        "user_context": "第三次调研",
+                    },
+                ),
+                _decision(user_message="继续推进"),
+            ]
+        ),
+        action_router=ActionRouter(store=store, research_executor=fake_research),
+    )
+
+    await app.run_turn("第一次")
+    await app.run_turn("第二次")
+    await app.run_turn("第三次")
+    await app.run_turn(None)
+
+    assert len(captured_contexts) == 4
+    assert "[系统标注] 本 session 已调研" not in captured_contexts[0]
+    assert "[系统标注] 本 session 已调研" not in captured_contexts[1]
+    assert "[系统标注] 本 session 已调研 2 个品类" in captured_contexts[2]
+    assert "[系统标注] 本 session 已调研 3 个品类" in captured_contexts[3]
 
 
 @pytest.mark.asyncio

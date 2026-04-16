@@ -11,6 +11,7 @@ from src.models.research import (
     PriceInfo,
     ProductInfo,
     ProductSearchOutput,
+    SearchMeta,
 )
 
 
@@ -249,6 +250,12 @@ def test_product_search_output_allows_empty_products() -> None:
     output = ProductSearchOutput.model_validate(
         {
             "products": [],
+            "search_meta": {
+                "retry_count": 1,
+                "result_status": "insufficient_results",
+                "search_expanded": True,
+                "expansion_notes": "放宽预算后仍结果较少",
+            },
             "notes": "暂无合适结果",
             "suggested_followup": "放宽预算",
         }
@@ -278,9 +285,30 @@ def test_product_search_output_serializes() -> None:
                     "source_consistency": "high",
                 }
             ],
+            "search_meta": {
+                "retry_count": 0,
+                "result_status": "ok",
+                "search_expanded": False,
+                "expansion_notes": None,
+            },
             "notes": "样例搜索输出",
             "suggested_followup": "对比透气性",
         }
     )
 
     assert output.model_dump(mode="json")["products"][0]["brand"] == "Arc'teryx"
+    assert output.model_dump(mode="json")["search_meta"]["result_status"] == "ok"
+
+
+def test_search_meta_supports_documented_fields() -> None:
+    search_meta = SearchMeta.model_validate(
+        {
+            "retry_count": 2,
+            "result_status": "partial_results",
+            "search_expanded": True,
+            "expansion_notes": "补搜了英文评测源",
+        }
+    )
+
+    assert search_meta.retry_count == 2
+    assert search_meta.result_status == "partial_results"

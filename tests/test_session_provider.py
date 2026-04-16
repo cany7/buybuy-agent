@@ -105,3 +105,65 @@ def test_session_provider_does_not_trigger_recovery_check_during_regular_context
 
     assert "pending_profile_updates" in context
     assert calls == []
+
+
+def test_session_provider_adds_soft_note_before_third_distinct_category_research(tmp_path: Path) -> None:
+    store = DocumentStore(base_dir=tmp_path / "data")
+    store.save_session(
+        {
+            "session_id": "2026-04-14-100000",
+            "error_state": {
+                "events": [
+                    {"type": "dispatch_category_research", "details": {"category": "户外装备"}},
+                    {"type": "dispatch_category_research", "details": {"category": "数码产品"}},
+                ]
+            },
+        }
+    )
+    provider = SessionContextProvider(store=store)
+
+    context = provider.build_context()
+
+    assert "[系统标注] 本 session 已调研 2 个品类" in context
+
+
+def test_session_provider_deduplicates_repeated_category_research_events(tmp_path: Path) -> None:
+    store = DocumentStore(base_dir=tmp_path / "data")
+    store.save_session(
+        {
+            "session_id": "2026-04-14-100000",
+            "error_state": {
+                "events": [
+                    {"type": "dispatch_category_research", "details": {"category": " 户外装备 "}},
+                    {"type": "dispatch_category_research", "details": {"category": "户外装备"}},
+                    {"type": "dispatch_category_research", "details": {"category": "数码产品"}},
+                ]
+            },
+        }
+    )
+    provider = SessionContextProvider(store=store)
+
+    context = provider.build_context()
+
+    assert "[系统标注] 本 session 已调研 2 个品类" in context
+
+
+def test_session_provider_keeps_soft_note_after_third_distinct_category_research(tmp_path: Path) -> None:
+    store = DocumentStore(base_dir=tmp_path / "data")
+    store.save_session(
+        {
+            "session_id": "2026-04-14-100000",
+            "error_state": {
+                "events": [
+                    {"type": "dispatch_category_research", "details": {"category": "户外装备"}},
+                    {"type": "dispatch_category_research", "details": {"category": "数码产品"}},
+                    {"type": "dispatch_category_research", "details": {"category": "智能家居"}},
+                ]
+            },
+        }
+    )
+    provider = SessionContextProvider(store=store)
+
+    context = provider.build_context()
+
+    assert "[系统标注] 本 session 已调研 3 个品类" in context

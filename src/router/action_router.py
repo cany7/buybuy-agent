@@ -9,7 +9,7 @@ from datetime import datetime
 from inspect import isawaitable
 from typing import Any, Awaitable, Callable
 
-from src.models.research import CategoryResearchOutput, ProductSearchOutput
+from src.models.research import CategoryResearchOutput, ProductSearchOutput, SearchMeta
 from src.store.document_store import DocumentStore
 
 SessionState = dict[str, Any]
@@ -200,6 +200,7 @@ class ActionRouter:
         decision_progress = dict(session.get("decision_progress") or {})
         decision_progress["recommendation_round"] = "未开始"
         session["decision_progress"] = decision_progress
+        self._update_error_state_from_search_meta(session, result.search_meta, result.notes)
 
     def _handle_category_research_result(
         self,
@@ -229,6 +230,14 @@ class ActionRouter:
             "type": "category_research",
             "result": payload,
         }
+        self._append_error_event(
+            session,
+            "dispatch_category_research",
+            {
+                "category": result.category,
+                "product_type": result.product_type_name,
+            },
+        )
 
     def _run_common_post_actions(
         self,
@@ -302,6 +311,72 @@ class ActionRouter:
             should_continue=False,
             session=session,
         )
+
+    def _update_error_state_from_search_meta(
+        self,
+        session: SessionState,
+        search_meta: SearchMeta,
+        notes: str,
+    ) -> None:
+        error_state = self._ensure_error_state(session)
+        error_state["search_retries"] = search_meta.retry_count
+
+        event_type = {
+            "insufficient_results": "insufficient_results",
+            "partial_results": "partial_search_result",
+            "failed": "search_failed",
+        }.get(search_meta.result_status)
+        if event_type is None:
+            return
+
+        self._append_error_event(
+            session,
+            event_type,
+            {
+                "retry_count": search_meta.retry_count,
+                "search_expanded": search_meta.search_expanded,
+                "expansion_notes": search_meta.expansion_notes,
+                "notes": notes,
+            },
+        )
+
+    def _append_error_event(
+        self,
+        session: SessionState,
+        event_type: str,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        error_state = self._ensure_error_state(session)
+        events = error_state["events"]
+        events.append(
+            {
+                "type": event_type,
+                "details": details or {},
+            }
+        )
+
+    def _ensure_error_state(self, session: SessionState) -> dict[str, Any]:
+        error_state = session.get("error_state")
+        if not isinstance(error_state, dict):
+            error_state = {}
+
+        if not isinstance(error_state.get("constraint_conflicts"), list):
+            error_state["constraint_conflicts"] = []
+        if not isinstance(error_state.get("validation_warnings"), list):
+            error_state["validation_warnings"] = []
+        if not isinstance(error_state.get("events"), list):
+            error_state["events"] = []
+
+        search_retries = error_state.get("search_retries")
+        if not isinstance(search_retries, int):
+            error_state["search_retries"] = 0
+
+        consecutive_negative_feedback = error_state.get("consecutive_negative_feedback")
+        if not isinstance(consecutive_negative_feedback, int):
+            error_state["consecutive_negative_feedback"] = 0
+
+        session["error_state"] = error_state
+        return error_state
 
     def _get_user_message(self, decision: Any) -> str:
         user_message = getattr(decision, "user_message", None)

@@ -46,6 +46,9 @@ class SessionContextProvider:
         staleness_note = self._build_staleness_note(current_session)
         if staleness_note:
             parts.extend(["", staleness_note])
+        category_research_note = self._build_category_research_note(current_session)
+        if category_research_note:
+            parts.extend(["", category_research_note])
 
         pending = current_session.get("pending_research_result")
         if isinstance(pending, dict):
@@ -82,3 +85,36 @@ class SessionContextProvider:
             lines.append("产品搜索结果可能已过期（价格/库存可能变化）。")
         lines.append("请先向用户确认需求是否仍然一致。")
         return "\n".join(lines)
+
+    def _build_category_research_note(self, session: SessionState) -> str:
+        category_research_count = self._count_researched_categories(session)
+        if category_research_count < 2:
+            return ""
+        return (
+            "[系统标注] 本 session 已调研 "
+            f"{category_research_count} 个品类。如需继续调研新品类，请在 internal_reasoning 中解释为什么无法复用已有品类知识。"
+        )
+
+    def _count_researched_categories(self, session: SessionState) -> int:
+        error_state = session.get("error_state")
+        if not isinstance(error_state, dict):
+            return 0
+
+        events = error_state.get("events")
+        if not isinstance(events, list):
+            return 0
+
+        categories: set[str] = set()
+        for event in events:
+            if not isinstance(event, dict) or event.get("type") != "dispatch_category_research":
+                continue
+            details = event.get("details")
+            if not isinstance(details, dict):
+                continue
+            category = details.get("category")
+            if not isinstance(category, str):
+                continue
+            normalized = category.strip()
+            if normalized:
+                categories.add(normalized)
+        return len(categories)
