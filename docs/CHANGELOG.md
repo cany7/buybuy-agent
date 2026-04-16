@@ -16,6 +16,28 @@
 - 后续：下一步或注意事项（可选）
 ```
 
+## 2026-04-16
+
+### [test] 补齐 P2.4/P2.5 的恢复分支与 onboarding 集成覆盖
+- 文件：`tests/test_document_store_phase2.py`、`tests/test_app.py`、`docs/CHANGELOG.md`
+- 变更：
+  1. 为 `apply_pending_profile_updates()` 新增 `复购/换代` 可正常落长期画像的测试
+  2. 为 `纯咨询` intent 新增跳过长期画像写入且清除草稿的测试
+  3. 为应用层新增 onboarding 集成测试，覆盖“新用户标注 -> `onboard_user` 写入 demographics -> 下一轮不再触发 onboarding 并恢复常规对话”
+  4. 新增“已有完整 demographics 的用户不出现 onboarding 标注”的应用层测试
+- 原因：按 `docs/TESTING.md` 和 `TASKS.md` 补齐 P2.4 / P2.5 仍缺的测试分支与链路验证，在不修改生产代码的前提下增强回归保护
+- 后续：若未来调整 onboarding 标注文案或恢复规则，应同步更新这些断言，继续保持测试与文档口径一致
+
+### [implementation] 收紧 P2.4/P2.5 的 onboarding 持久化与画像草稿收口
+- 文件：`src/router/action_router.py`、`tests/test_action_router.py`、`docs/CHANGELOG.md`
+- 变更：
+  1. 将 `onboard_user` 的 demographics 写入路径从 router 直接读写 `global_profile.json` 收口为统一调用 `DocumentStore.save_global_profile()`
+  2. 为 `action_payload.demographics` 增加系统侧必填校验，要求 `gender`、`age_range`、`location` 必须存在且为非空字符串；非法 payload 改为写入 `error_state.validation_warnings` 并拒绝落盘
+  3. onboarding 写入时保留已有 `global_profile` 的其他 section，并保留已有 `demographics` 中非 onboarding 字段
+  4. 补充 `ActionRouter` 单测，覆盖 onboarding 成功写入、保留已有画像信息，以及缺字段/空字符串时不落盘的错误路径
+- 原因：按 `TASKS.md` 完成 P2.4 / P2.5 的剩余收口，避免 router 绕过 store 层直接写文件，同时把 onboarding payload 约束收紧到文档定义
+- 后续：如后面增加更细粒度 profile schema 校验，应继续保持通过 store 层统一落盘
+
 ## 2026-04-15
 
 ### [fix] 修正品类调研软提示触发语义并恢复静态检查通过

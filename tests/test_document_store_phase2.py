@@ -185,12 +185,88 @@ def test_apply_pending_profile_updates_writes_long_term_profiles(tmp_path: Path)
     ]
 
 
+def test_apply_pending_profile_updates_writes_long_term_profiles_for_repurchase_intent(
+    tmp_path: Path,
+) -> None:
+    store = DocumentStore(base_dir=tmp_path / "data")
+    store.save_session(
+        {
+            "session_id": "2026-04-15-100000",
+            "intent": "复购/换代",
+            "category": "户外装备",
+            "decision_progress": {"recommendation_round": "完成"},
+            "error_state": {
+                "constraint_conflicts": [],
+                "consecutive_negative_feedback": 0,
+                "validation_warnings": [],
+            },
+            "pending_profile_updates": {
+                "global_profile": {"lifestyle_tags": ["通勤", "徒步"]},
+                "category_preferences": {
+                    "primary_scenarios": ["旧装备换代"],
+                    "purchase_history": [
+                        {"product_type": "冲锋衣", "chosen_product": "Beta LT"}
+                    ],
+                },
+            },
+        }
+    )
+
+    applied = store.apply_pending_profile_updates(store.load_session() or {})
+    current_session = store.load_session()
+    global_profile = store.load_global_profile()
+    category_preferences = store.load_category_preferences("户外装备")
+
+    assert applied is True
+    assert current_session is not None
+    assert "pending_profile_updates" not in current_session
+    assert global_profile is not None
+    assert global_profile["lifestyle_tags"] == ["通勤", "徒步"]
+    assert category_preferences is not None
+    assert category_preferences["primary_scenarios"] == ["旧装备换代"]
+    assert category_preferences["purchase_history"] == [
+        {"product_type": "冲锋衣", "chosen_product": "Beta LT"}
+    ]
+
+
 def test_apply_pending_profile_updates_skips_gift_and_clears_draft(tmp_path: Path) -> None:
     store = DocumentStore(base_dir=tmp_path / "data")
     store.save_session(
         {
             "session_id": "2026-04-15-100000",
             "intent": "送礼",
+            "category": "户外装备",
+            "decision_progress": {"recommendation_round": "完成"},
+            "error_state": {
+                "constraint_conflicts": [],
+                "consecutive_negative_feedback": 0,
+                "validation_warnings": [],
+            },
+            "pending_profile_updates": {
+                "global_profile": {"lifestyle_tags": ["徒步"]},
+                "category_preferences": {"primary_scenarios": ["周末徒步"]},
+            },
+        }
+    )
+
+    applied = store.apply_pending_profile_updates(store.load_session() or {})
+    current_session = store.load_session()
+
+    assert applied is False
+    assert current_session is not None
+    assert "pending_profile_updates" not in current_session
+    assert store.load_global_profile() is None
+    assert store.load_category_preferences("户外装备") is None
+
+
+def test_apply_pending_profile_updates_skips_consulting_intent_and_clears_draft(
+    tmp_path: Path,
+) -> None:
+    store = DocumentStore(base_dir=tmp_path / "data")
+    store.save_session(
+        {
+            "session_id": "2026-04-15-100000",
+            "intent": "纯咨询",
             "category": "户外装备",
             "decision_progress": {"recommendation_round": "完成"},
             "error_state": {

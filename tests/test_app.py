@@ -540,6 +540,108 @@ async def test_app_initialize_applies_pending_profile_updates_to_long_term_store
     assert category_preferences["primary_scenarios"] == ["周末徒步"]
 
 
+@pytest.mark.asyncio
+async def test_app_onboarding_flow_writes_demographics_and_then_resumes_normal_dialogue(
+    tmp_path: Path,
+) -> None:
+    store = DocumentStore(base_dir=tmp_path / "data")
+    captured_contexts: list[str] = []
+
+    @dataclass
+    class RecordingMainAgent:
+        decisions: list[DecisionOutput]
+
+        async def run(self, context: str, user_message: str) -> DecisionOutput:
+            captured_contexts.append(context)
+            return self.decisions.pop(0)
+
+    async def fake_research(task_type: str, payload: dict[str, object]):
+        raise AssertionError("research should not run")
+
+    app = ShoppingApplication(
+        store=store,
+        main_agent=RecordingMainAgent(
+            [
+                _decision(
+                    user_message="先补充一下基础信息。",
+                    next_action="onboard_user",
+                    action_payload={
+                        "demographics": {
+                            "gender": "男",
+                            "age_range": "25-34",
+                            "location": "上海",
+                        }
+                    },
+                ),
+                _decision(
+                    user_message="现在可以继续说说你的使用场景了。",
+                    next_action="ask_user",
+                    session_updates={"category": "户外装备", "product_type": "冲锋衣"},
+                ),
+            ]
+        ),
+        action_router=ActionRouter(store=store, research_executor=fake_research),
+    )
+
+    first = await app.run_turn("想买冲锋衣")
+    global_profile = store.load_global_profile()
+    second = await app.run_turn("想买冲锋衣")
+
+    assert "新用户，请先执行轻量 onboarding" in captured_contexts[0]
+    assert global_profile is not None
+    assert global_profile["demographics"] == {
+        "gender": "男",
+        "age_range": "25-34",
+        "location": "上海",
+    }
+    assert first.wait_for_user_input is True
+    assert "新用户，请先执行轻量 onboarding" not in captured_contexts[1]
+    assert "## 用户画像" in captured_contexts[1]
+    assert "上海" in captured_contexts[1]
+    assert second.user_message == "现在可以继续说说你的使用场景了。"
+    assert second.wait_for_user_input is True
+
+
+@pytest.mark.asyncio
+async def test_app_existing_user_context_does_not_include_onboarding_note(tmp_path: Path) -> None:
+    store = DocumentStore(base_dir=tmp_path / "data")
+    store.save_global_profile(
+        {
+            "demographics": {
+                "gender": "男",
+                "age_range": "25-34",
+                "location": "上海",
+            },
+            "lifestyle_tags": ["徒步"],
+        }
+    )
+    captured_contexts: list[str] = []
+
+    @dataclass
+    class RecordingMainAgent:
+        decisions: list[DecisionOutput]
+
+        async def run(self, context: str, user_message: str) -> DecisionOutput:
+            captured_contexts.append(context)
+            return self.decisions.pop(0)
+
+    async def fake_research(task_type: str, payload: dict[str, object]):
+        raise AssertionError("research should not run")
+
+    app = ShoppingApplication(
+        store=store,
+        main_agent=RecordingMainAgent([_decision(user_message="请说说这次想买什么。")]),
+        action_router=ActionRouter(store=store, research_executor=fake_research),
+    )
+
+    result = await app.run_turn("想买新鞋")
+
+    assert "新用户，请先执行轻量 onboarding" not in captured_contexts[0]
+    assert "## 用户画像" in captured_contexts[0]
+    assert "上海" in captured_contexts[0]
+    assert result.user_message == "请说说这次想买什么。"
+
+
 def test_generate_session_id_matches_documented_format() -> None:
     session_id = generate_session_id()
 

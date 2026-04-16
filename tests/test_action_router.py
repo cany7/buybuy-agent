@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Literal
@@ -330,6 +329,17 @@ async def test_router_raises_when_round_completes_without_profile_updates(tmp_pa
 @pytest.mark.asyncio
 async def test_router_onboard_user_writes_global_profile(tmp_path: Path) -> None:
     store = DocumentStore(base_dir=tmp_path / "data")
+    store.save_global_profile(
+        {
+            "demographics": {
+                "gender": "女",
+                "age_range": "35-44",
+                "location": "北京",
+                "occupation_hint": "产品经理",
+            },
+            "lifestyle_tags": ["徒步"],
+        }
+    )
 
     async def fake_research(task_type: str, payload: dict[str, Any]) -> Any:
         raise AssertionError("research should not run")
@@ -343,9 +353,79 @@ async def test_router_onboard_user_writes_global_profile(tmp_path: Path) -> None
         {"session_id": "2026-04-14-100000"},
     )
 
-    profile_path = tmp_path / "data" / "user_profile" / "global_profile.json"
-    saved = json.loads(profile_path.read_text(encoding="utf-8"))
+    saved = store.load_global_profile()
+    assert saved is not None
     assert saved["demographics"]["location"] == "上海"
+    assert saved["demographics"]["gender"] == "男"
+    assert saved["demographics"]["occupation_hint"] == "产品经理"
+    assert saved["lifestyle_tags"] == ["徒步"]
+    assert saved["last_updated"]
+
+
+@pytest.mark.asyncio
+async def test_router_onboard_user_rejects_missing_required_demographics_fields(
+    tmp_path: Path,
+) -> None:
+    store = DocumentStore(base_dir=tmp_path / "data")
+
+    async def fake_research(task_type: str, payload: dict[str, Any]) -> Any:
+        raise AssertionError("research should not run")
+
+    router = ActionRouter(store=store, research_executor=fake_research)
+    result = await router.route(
+        _decision(
+            next_action="onboard_user",
+            action_payload={"demographics": {"gender": "男", "location": "上海"}},
+        ),
+        {"session_id": "2026-04-14-100000"},
+    )
+
+    saved_session = store.load_session()
+
+    assert result.wait_for_user_input is True
+    assert result.should_continue is False
+    assert store.load_global_profile() is None
+    assert saved_session is not None
+    assert (
+        saved_session["error_state"]["validation_warnings"][0]
+        == "onboard_user demographics missing required fields: age_range."
+    )
+
+
+@pytest.mark.asyncio
+async def test_router_onboard_user_rejects_blank_required_demographics_fields(
+    tmp_path: Path,
+) -> None:
+    store = DocumentStore(base_dir=tmp_path / "data")
+
+    async def fake_research(task_type: str, payload: dict[str, Any]) -> Any:
+        raise AssertionError("research should not run")
+
+    router = ActionRouter(store=store, research_executor=fake_research)
+    result = await router.route(
+        _decision(
+            next_action="onboard_user",
+            action_payload={
+                "demographics": {
+                    "gender": "男",
+                    "age_range": "25-34",
+                    "location": "   ",
+                }
+            },
+        ),
+        {"session_id": "2026-04-14-100000"},
+    )
+
+    saved_session = store.load_session()
+
+    assert result.wait_for_user_input is True
+    assert result.should_continue is False
+    assert store.load_global_profile() is None
+    assert saved_session is not None
+    assert (
+        saved_session["error_state"]["validation_warnings"][0]
+        == "onboard_user demographics fields must be non-empty strings: location."
+    )
 
 
 @pytest.mark.asyncio

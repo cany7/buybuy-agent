@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
@@ -16,6 +15,7 @@ SessionState = dict[str, Any]
 ResearchOutput = CategoryResearchOutput | ProductSearchOutput
 ResearchExecutor = Callable[[str, dict[str, Any]], Awaitable[ResearchOutput]]
 MessageEmitter = Callable[[str], object]
+REQUIRED_DEMOGRAPHICS_FIELDS = ("gender", "age_range", "location")
 
 SESSION_UPDATE_WHITELIST = {
     "intent",
@@ -262,20 +262,44 @@ class ActionRouter:
         demographics = action_payload.get("demographics")
         if not isinstance(demographics, dict):
             raise ValueError("onboard_user requires a demographics object.")
+        normalized_demographics = self._normalize_demographics(demographics)
 
-        profile_path = self._store.user_profile_dir / "global_profile.json"
-        profile_path.parent.mkdir(parents=True, exist_ok=True)
-        existing: dict[str, Any] = {}
-        if profile_path.exists():
-            with profile_path.open("r", encoding="utf-8") as file:
-                loaded = json.load(file)
-            if isinstance(loaded, dict):
-                existing = loaded
+        existing_profile = self._store.load_global_profile() or {}
+        existing_demographics = existing_profile.get("demographics")
+        merged_demographics = (
+            dict(existing_demographics)
+            if isinstance(existing_demographics, dict)
+            else {}
+        )
+        merged_demographics.update(normalized_demographics)
 
-        existing["demographics"] = demographics
-        with profile_path.open("w", encoding="utf-8") as file:
-            json.dump(existing, file, ensure_ascii=False, indent=2)
-            file.write("\n")
+        self._store.save_global_profile({"demographics": merged_demographics})
+
+    def _normalize_demographics(self, demographics: dict[str, Any]) -> dict[str, str]:
+        normalized: dict[str, str] = {}
+        missing_fields: list[str] = []
+        invalid_fields: list[str] = []
+
+        for field in REQUIRED_DEMOGRAPHICS_FIELDS:
+            value = demographics.get(field)
+            if value is None:
+                missing_fields.append(field)
+                continue
+            if not isinstance(value, str) or not value.strip():
+                invalid_fields.append(field)
+                continue
+            normalized[field] = value.strip()
+
+        if missing_fields:
+            missing = ", ".join(missing_fields)
+            raise ValueError(f"onboard_user demographics missing required fields: {missing}.")
+        if invalid_fields:
+            invalid = ", ".join(invalid_fields)
+            raise ValueError(
+                f"onboard_user demographics fields must be non-empty strings: {invalid}."
+            )
+
+        return normalized
 
     async def _deliver_user_message(
         self,
