@@ -719,6 +719,140 @@ async def test_router_dispatch_category_research_merges_new_product_type(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_router_retries_category_research_once_after_research_failure(tmp_path: Path) -> None:
+    store = DocumentStore(base_dir=tmp_path / "data")
+    received_payloads: list[dict[str, Any]] = []
+
+    async def flaky_research(task_type: str, payload: dict[str, Any]) -> Any:
+        received_payloads.append(dict(payload))
+        if len(received_payloads) == 1:
+            raise RuntimeError("temporary upstream failure")
+        return CategoryResearchOutput.model_validate(
+            {
+                "category": "户外装备",
+                "category_knowledge": {
+                    "data_sources": ["https://example.com/guide"],
+                    "product_type_overview": [
+                        {
+                            "product_type": "冲锋衣",
+                            "subtypes": ["硬壳"],
+                            "description": "防水外层",
+                        }
+                    ],
+                    "shared_concepts": [],
+                    "brand_landscape": [],
+                },
+                "product_type_name": "冲锋衣",
+                "product_type_knowledge": {
+                    "subtypes": {"硬壳": "强调防护"},
+                    "decision_dimensions": [
+                        {
+                            "name": "防水",
+                            "objectivity": "可量化",
+                            "importance": "高",
+                            "ambiguity_risk": "中",
+                        }
+                    ],
+                    "tradeoffs": [],
+                    "price_tiers": [],
+                    "scenario_mapping": [
+                        {
+                            "scenario": "周末徒步",
+                            "key_needs": ["防水"],
+                            "can_compromise": ["重量"],
+                        }
+                    ],
+                    "common_misconceptions": [],
+                },
+            }
+        )
+
+    router = ActionRouter(store=store, research_executor=flaky_research)
+    result = await router.route(
+        _decision(
+            next_action="dispatch_category_research",
+            action_payload={
+                "category": "户外装备",
+                "product_type": "冲锋衣",
+                "user_context": "测试品类调研重试",
+            },
+        ),
+        {"session_id": "2026-04-14-100000"},
+    )
+
+    knowledge = store.load_knowledge("户外装备")
+
+    assert len(received_payloads) == 2
+    assert "research_brief" not in received_payloads[0]
+    assert "重试" in received_payloads[1]["research_brief"]
+    assert result.should_continue is True
+    assert result.session["pending_research_result"]["type"] == "category_research"
+    assert result.session["error_state"]["events"][0]["type"] == "dispatch_category_research"
+    assert knowledge is not None
+    assert knowledge["product_types"]["冲锋衣"]["decision_dimensions"][0]["name"] == "防水"
+
+
+@pytest.mark.asyncio
+async def test_router_degrades_category_research_after_research_failure_twice(tmp_path: Path) -> None:
+    store = DocumentStore(base_dir=tmp_path / "data")
+    attempts = 0
+
+    async def always_fail(task_type: str, payload: dict[str, Any]) -> Any:
+        nonlocal attempts
+        attempts += 1
+        raise RuntimeError("category research backend unavailable")
+
+    router = ActionRouter(store=store, research_executor=always_fail)
+    result = await router.route(
+        _decision(
+            next_action="dispatch_category_research",
+            action_payload={
+                "category": "户外装备",
+                "product_type": "冲锋衣",
+                "user_context": "测试品类调研失败降级",
+            },
+        ),
+        {"session_id": "2026-04-14-100000"},
+    )
+
+    assert attempts == 2
+    assert result.should_continue is True
+    assert result.session["pending_research_result"]["type"] == "category_research"
+    assert "暂时无法完成品类调研" in result.session["pending_research_result"]["result"]["notes"]
+    assert store.load_knowledge("户外装备") is None
+    assert result.session["error_state"]["events"][0]["type"] == "category_research_failed"
+
+
+@pytest.mark.asyncio
+async def test_router_degrades_category_research_when_research_output_is_unparseable(
+    tmp_path: Path,
+) -> None:
+    store = DocumentStore(base_dir=tmp_path / "data")
+
+    async def invalid_output(task_type: str, payload: dict[str, Any]) -> Any:
+        return {"category": "户外装备", "product_type_name": "冲锋衣"}
+
+    router = ActionRouter(store=store, research_executor=invalid_output)
+    result = await router.route(
+        _decision(
+            next_action="dispatch_category_research",
+            action_payload={
+                "category": "户外装备",
+                "product_type": "冲锋衣",
+                "user_context": "测试品类调研解析失败",
+            },
+        ),
+        {"session_id": "2026-04-14-100000"},
+    )
+
+    assert result.should_continue is True
+    assert result.session["pending_research_result"]["type"] == "category_research"
+    assert "结构化结果解析失败" in result.session["pending_research_result"]["result"]["notes"]
+    assert store.load_knowledge("户外装备") is None
+    assert result.session["error_state"]["events"][0]["type"] == "category_research_failed"
+
+
+@pytest.mark.asyncio
 async def test_router_handles_invalid_next_action_without_crashing(tmp_path: Path) -> None:
     store = DocumentStore(base_dir=tmp_path / "data")
 

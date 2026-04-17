@@ -18,6 +18,13 @@
 
 ## 2026-04-17
 
+### [docs] 收口 TESTING 1-4 对 phase3 保护链路的覆盖口径
+- 文件：`docs/TESTING.md`、`tests/test_action_router.py`、`docs/CHANGELOG.md`
+- 变更：
+  1. 在 `TESTING.md` 的 3.3/3.4/4.1-4.4 中补充 phase3 已实现但此前未完整写入的关键覆盖项，包括主 Agent 重试与降级、研究 dispatch 重试与降级、日志级别分层、需求挖掘软边界、连续负面反馈提示，以及显式新开会话的恢复路径
+  2. 为 `dispatch_category_research` 补充三条回归测试，覆盖“首次失败后重试成功”“连续失败降级”“结构化结果不可解析时降级”，避免该分支继续只靠产品搜索同类用例间接代表
+- 原因：本轮 review 发现 `TESTING` 1-4 对 phase3 保护链路的口径不完整，且品类调研失败分支缺少直接自动化回归，需要把文档要求和实际测试面重新对齐
+
 ### [implementation] 完成 P3.5 的错误处理与降级
 - 文件：`src/app.py`、`src/router/action_router.py`、`src/utils/logger.py`、`tests/test_app.py`、`tests/test_action_router.py`、`docs/CHANGELOG.md`
 - 变更：

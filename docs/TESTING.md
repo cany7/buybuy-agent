@@ -128,8 +128,13 @@
 | `recommend` 路由 | `next_action="recommend"` | 行为同 `ask_user` |
 | `dispatch_product_search` 路由 | 合法 payload | 调用 `execute_research()`，后处理正确 |
 | `dispatch_product_search` 路由（预算可空） | `constraints.budget = null / unspecified` | 仍视为合法 payload |
+| `dispatch_product_search` 重试 | 首次研究执行失败 | 自动补充 retry `research_brief` 并重试一次 |
+| `dispatch_product_search` 降级 | 连续失败或返回不可解析结果 | 返回 `failed` 空结果，不崩溃，并保留可消费交接结果 |
 | `dispatch_category_research` 路由 | 合法 payload，包含 `user_context` | 调用 `execute_research()`，知识文档写入 |
+| `dispatch_category_research` 重试 | 首次研究执行失败 | 自动补充 retry `research_brief` 并重试一次 |
+| `dispatch_category_research` 降级 | 连续失败或返回不可解析结果 | 不写 knowledge，保留 `category_research` 类型的空交接结果，并记录失败事件 |
 | `onboard_user` 路由 | 包含 demographics | demographics 写入 `global_profile.json` |
+| `onboard_user` 非法 demographics | 缺字段或空字符串 | 记录 `validation_warnings`，不落盘 |
 | 非法 `next_action` | 不在枚举中的值 | 记录错误，不崩溃 |
 | 非法 payload 格式 | `dispatch_product_search` 缺少必要字段 | 记录错误，不崩溃 |
 | `candidate_products` 刷新 | `dispatch_product_search` 后处理 | 保存 research agent 初筛候选池 |
@@ -144,8 +149,10 @@
 | 测试用例 | 验证内容 | 预期结果 |
 |---------|---------|---------|
 | 最大轮数 | 第 30 轮后 | 提示用户并保留当前 session |
+| 需求挖掘建议次数 | 连续需求挖掘达到阈值 | 在 context 中注入“必须推进或说明原因”的软提示 |
 | 品类调研建议次数 | 已调研 2 个不同 category 后，准备进入第 3 个不同 category | 预先触发软提示，要求优先复用已有 knowledge 或解释继续调研的必要性 |
 | 产品搜索建议次数 | 第 7 次 `dispatch_product_search` | 给出软提示 |
+| 连续负面反馈提示 | `consecutive_negative_feedback >= 2` | 在 context 中注入重新锚定需求与反思推荐策略的提示 |
 | 阈值可配置 | 修改配置值 | 按新阈值执行 |
 
 ---
@@ -166,6 +173,9 @@
 | 推荐完成生成画像草稿 | `recommend`（recommendation_round="完成"，含 profile_updates） | `pending_profile_updates` 被写入 session |
 | 重启后应用画像草稿 | 启动时发现未应用的 `pending_profile_updates` | 恢复检查通过后更新 global_profile 和 category_preferences |
 | Onboarding → 正常对话 | `onboard_user` → `ask_user` → ... | demographics 写入后正常对话继续 |
+| 主 Agent API 失败后重试 | 第一次抛异常，第二次成功 | 本轮继续推进，用户不看到降级消息 |
+| 主 Agent API 连续失败降级 | 连续两次抛异常 | 返回友好失败消息，并写入 `main_agent_api_failed` 事件 |
+| `DecisionOutput` 解析失败降级 | 连续两次解析失败 | 返回保守通用消息，并写入 `decision_parse_failed` 事件 |
 
 ### 4.2 Dispatch 后处理链路
 
@@ -176,6 +186,8 @@
 | 多次产品搜索后处理 | 连续两次 `dispatch_product_search` | 新一轮 research 结果正确覆盖 `pending_research_result`，`candidate_products` 按当前研究焦点顺序刷新，`recommendation_round` 每次都重置 |
 | 研究 Agent 返回空结果 | 不崩溃，`pending_research_result` 包含空结果 + notes |
 | payload sanity check | payload 缺少必填字段时不调用研究 Agent |
+| 产品搜索重试与降级 | 首次研究失败、连续两次失败、结果不可解析 | 自动重试一次；仍失败时返回 `failed` 空结果并保留交接信息 |
+| 品类调研重试与降级 | 首次研究失败、连续两次失败、结果不可解析 | 自动重试一次；仍失败时不写 knowledge，但保留空交接结果并记录 `category_research_failed` |
 
 ### 4.3 Session 保留与恢复流程
 
@@ -183,7 +195,16 @@
 |---------|---------|
 | 退出后保留 current session | `current_session.json` 保持存在且内容完整 |
 | 下次启动恢复检查 | 发现 `pending_profile_updates` 时先执行恢复判断 |
+| 显式新开会话 | `start_new_session=True` 且当前 active session 含待恢复草稿 | 先执行恢复检查，再保留旧 active session 为历史并创建新的 active session |
 | 历史 session 不默认注入 | 有历史 session 文件时，常规对话不自动加载 |
+
+### 4.4 日志与告警分级
+
+| 测试用例 | 验证内容 |
+|---------|---------|
+| 正常 turn 记 INFO | 正常完成一轮 `ask_user/recommend/dispatch` | `session_log.jsonl` 追加完整记录，`level=INFO` |
+| staleness 记 WARNING | context 含会话过期系统标注 | 对应 turn 日志 `level=WARNING`，并保留 staleness 文案 |
+| 校验失败/降级记 ERROR | payload 校验失败、研究降级或主 Agent 降级 | 对应 turn 日志 `level=ERROR`，`errors` 字段包含原因 |
 
 ---
 
