@@ -91,6 +91,7 @@ def test_validate_category_research_payload_rejects_missing_fields() -> None:
 def test_build_product_search_instructions_renders_template() -> None:
     instructions = build_product_search_instructions(_payload())
 
+    assert instructions.startswith("# 产品搜索任务")
     assert "搜索适合周末徒步的冲锋衣" in instructions
     assert DEFAULT_RESEARCH_BRIEF in instructions
     assert "预算范围：unspecified" in instructions
@@ -108,9 +109,26 @@ def test_build_product_search_instructions_uses_custom_research_brief() -> None:
 def test_build_category_research_instructions_renders_template() -> None:
     instructions = build_category_research_instructions(_category_payload())
 
+    assert instructions.startswith("# 品类调研任务")
     assert "调研 户外装备 品类下的 冲锋衣 产品类型" in instructions
     assert "男性用户，28岁，上海" in instructions
     assert DEFAULT_RESEARCH_BRIEF in instructions
+
+
+def test_build_product_search_instructions_fills_all_template_placeholders() -> None:
+    instructions = build_product_search_instructions(_payload())
+
+    assert "{product_type}" not in instructions
+    assert "{search_goal}" not in instructions
+    assert "{research_brief}" not in instructions
+
+
+def test_build_category_research_instructions_fills_all_template_placeholders() -> None:
+    instructions = build_category_research_instructions(_category_payload())
+
+    assert "{category}" not in instructions
+    assert "{product_type}" not in instructions
+    assert "{user_context}" not in instructions
 
 
 def test_build_category_research_instructions_uses_custom_research_brief() -> None:

@@ -723,7 +723,7 @@ System Prompt 在产品层面应遵循以下策略优先级层次，确保运行
    - `recommendation_round = "完成"` 时生成 `pending_profile_updates`
    - 下次启动发现活跃 session 时执行恢复检查并决定是否应用长期画像更新
 
-更具体的 prompt 细节定义见 `PROMPTS.md`，但运行顺序应以本节为准。
+更具体的 prompt 设计细节见 `PROMPTS.md`，运行时资源文件位于 `src/prompts/`；运行顺序应以本节为准。
 
 ### 13.4 模型分级
 

@@ -5,6 +5,7 @@ from typing import Any
 
 import pytest
 
+from src.agents import main_agent as main_agent_module
 from src.agents.main_agent import MainAgentRunner, create_main_agent
 from src.models.decision import DecisionOutput
 
@@ -48,3 +49,27 @@ def test_create_main_agent_has_no_tools() -> None:
 
     assert isinstance(runner, MainAgentRunner)
     assert runner.agent.default_options["tools"] == []
+
+
+def test_create_main_agent_uses_runtime_prompt_loader(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, Any] = {}
+
+    class FakeAgent:
+        def __init__(self, *, client: Any, name: str, instructions: str, tools: list[Any]) -> None:
+            captured["client"] = client
+            captured["name"] = name
+            captured["instructions"] = instructions
+            self.default_options = {"tools": tools}
+
+    monkeypatch.setattr(main_agent_module, "Agent", FakeAgent)
+    monkeypatch.setattr(
+        main_agent_module,
+        "load_main_agent_instructions",
+        lambda: "runtime prompt marker",
+    )
+
+    runner = main_agent_module.create_main_agent(client=DummyClient())
+
+    assert isinstance(runner, MainAgentRunner)
+    assert captured["name"] == "main_agent"
+    assert captured["instructions"] == "runtime prompt marker"

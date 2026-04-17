@@ -241,7 +241,7 @@ ReAct 的 Observe → Reason → Act 发生在外部循环的每一轮：
 | 通信方向 | 介质 | 内容 |
 |---------|------|------|
 | 主 Agent → 应用层 | DecisionOutput 的 `next_action` + `action_payload` | "请执行品类调研/产品搜索，搜索条件是..." |
-| 应用层 → 研究 Agent | 创建 Agent 实例时传入的 instructions + 任务描述 | 品类调研模板或产品搜索模板，已填充搜索条件和搜索语言指引 |
+| 应用层 → 研究 Agent | 创建 Agent 实例时传入的 instructions + 任务描述 | 来自 `src/prompts/` 的品类调研模板或产品搜索模板，已填充搜索条件和搜索语言指引 |
 | 研究 Agent → 应用层 | ResearchOutput（Pydantic 结构化输出） | 品类知识或产品列表 |
 | 应用层 → 主 Agent | 通过 ContextProvider 注入下一轮 context | 研究结果（pending_research_result）、活动候选池（candidate_products）、更新后的 session state |
 

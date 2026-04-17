@@ -18,6 +18,15 @@
 
 ## 2026-04-17
 
+### [refactor] 迁移运行时 prompt 资源到 src/prompts
+- 文件：`src/prompts/`、`src/agents/prompts.py`、`tests/test_prompts.py`、`tests/test_main_agent.py`、`tests/test_research_agent.py`、`docs/PROMPTS.md`、`docs/TASKS.md`、`docs/ARCHITECTURE.md`、`docs/TESTING.md`、`docs/INTERFACES.md`、`docs/SPEC.md`、`docs/CHANGELOG.md`
+- 变更：
+  1. 新增 `src/prompts/main_agent_system.txt`、`category_research.txt`、`product_search.txt` 作为运行时唯一 prompt 资源来源
+  2. 重写 `src/agents/prompts.py`，删除对 `docs/PROMPTS.md` 的读取、Markdown 解析与 LRU 缓存，改为直接按文件名读取运行时资源
+  3. 新增 prompt loader 专项测试，并补充主 Agent / 研究 Agent 的运行时 prompt 回归断言与模板占位符渲染校验
+  4. 收口文档口径，明确 `docs/PROMPTS.md` 仅为开发文档，运行时代码只能读取 `src/prompts/`
+- 原因：避免让 docs 参与运行时逻辑，去掉文档结构与代码实现的强耦合，降低 prompt 维护成本
+
 ### [docs] 收口 TESTING 1-4 对 phase3 保护链路的覆盖口径
 - 文件：`docs/TESTING.md`、`tests/test_action_router.py`、`docs/CHANGELOG.md`
 - 变更：

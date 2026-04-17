@@ -177,13 +177,13 @@ class DocumentStore:
 | 项目 | 说明 |
 |------|------|
 | **依赖** | P1.2 |
-| **源文档** | PROMPTS.md §一（完整 System Prompt）、ARCHITECTURE.md §5.1（主 Agent 无 FunctionTool） |
+| **源文档** | PROMPTS.md §一（设计定义）、`src/prompts/main_agent_system.txt`（运行时资源）、ARCHITECTURE.md §5.1（主 Agent 无 FunctionTool） |
 | **输出物** | `src/agents/main_agent.py` |
 
 **内容**：
 
 1. 定义主 Agent 的创建函数/类：
-   - `instructions` = PROMPTS.md §1.2 的完整 System Prompt
+   - `instructions` = `src/prompts/main_agent_system.txt` 的完整 System Prompt（设计说明见 PROMPTS.md §1.2）
    - `output_type` = `DecisionOutput`
    - `model` = 强推理模型（GPT-4o / Claude Opus，从配置读取）
    - **无 tools**（纯推理器）
@@ -204,7 +204,7 @@ class DocumentStore:
 | 项目 | 说明 |
 |------|------|
 | **依赖** | P1.2 |
-| **源文档** | PROMPTS.md §2.2（产品搜索模板）、ARCHITECTURE.md §5.2（搜索工具）、§八（独立 context 实现） |
+| **源文档** | PROMPTS.md §2.2（设计定义）、`src/prompts/product_search.txt`（运行时资源）、ARCHITECTURE.md §5.2（搜索工具）、§八（独立 context 实现） |
 | **输出物** | `src/agents/research_agent.py`、`src/agents/tools.py` |
 
 **内容**：
@@ -216,7 +216,7 @@ class DocumentStore:
 2. 实现 `execute_research()` 函数：
    - 接收 `task_type` 和 `action_payload`
    - Phase 1 仅支持 `dispatch_product_search`
-   - 从 PROMPTS.md §2.2 的模板填充 instructions
+   - 从 `src/prompts/product_search.txt` 的模板填充 instructions（设计说明见 PROMPTS.md §2.2）
    - 从 `action_payload.research_brief` 获取搜索策略提示（可选），若未提供则使用默认提示
    - 如仅做本地 fixture / 手工验证，可临时硬编码为中文，但这属于测试限定，不属于正式实现口径
    - `dispatch_product_search` 的 payload 校验接受 `constraints.budget = null / "unspecified"` 的合法情况
@@ -433,13 +433,13 @@ def save_category_preferences(category: str, updates: dict) -> None
 | 项目 | 说明 |
 |------|------|
 | **依赖** | P1.5、P2.1 |
-| **源文档** | PROMPTS.md §2.1（品类调研模板）、ARCHITECTURE.md §九（Dispatch 后处理） |
+| **源文档** | PROMPTS.md §2.1（设计定义）、`src/prompts/category_research.txt`（运行时资源）、ARCHITECTURE.md §九（Dispatch 后处理） |
 | **输出物** | `src/agents/research_agent.py`（扩展） |
 
 **内容**：
 
 1. 扩展 `execute_research()` 支持 `dispatch_category_research`：
-   - 从 PROMPTS.md §2.1 的模板填充 instructions
+   - 从 `src/prompts/category_research.txt` 的模板填充 instructions（设计说明见 PROMPTS.md §2.1）
    - 输出类型为 `CategoryResearchOutput`
    - 后处理：
      - 品类文档不存在 → `DocumentStore.save_knowledge()` 新建

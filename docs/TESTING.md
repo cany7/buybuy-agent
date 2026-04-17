@@ -85,7 +85,7 @@
 
 ### 3.2 ContextProviders
 
-> 源文档：ARCHITECTURE.md §七、PROMPTS.md §三
+> 源文档：ARCHITECTURE.md §七、PROMPTS.md §三（格式定义，不是运行时加载源）
 
 #### SessionContextProvider
 

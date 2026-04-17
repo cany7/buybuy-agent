@@ -1,42 +1,35 @@
-"""Prompt loading helpers backed by docs/PROMPTS.md."""
+"""Prompt loading helpers backed by src/prompts resources."""
 
 from __future__ import annotations
 
-import re
-from functools import lru_cache
 from pathlib import Path
 
 
-def _prompts_doc_path() -> Path:
-    return Path(__file__).resolve().parents[2] / "docs" / "PROMPTS.md"
+def _prompts_dir() -> Path:
+    return Path(__file__).resolve().parents[1] / "prompts"
 
 
-@lru_cache(maxsize=1)
-def _prompts_doc_text() -> str:
-    return _prompts_doc_path().read_text(encoding="utf-8")
+def _prompt_resource_path(filename: str) -> Path:
+    return _prompts_dir() / filename
 
 
-def _extract_markdown_code_block(heading: str) -> str:
-    pattern = rf"{re.escape(heading)}.*?```markdown\n(.*?)\n```"
-    match = re.search(pattern, _prompts_doc_text(), re.DOTALL)
-    if match is None:
-        raise ValueError(f"Could not find markdown code block for heading: {heading}")
-    return match.group(1).strip()
+def _load_prompt_file(filename: str) -> str:
+    return _prompt_resource_path(filename).read_text(encoding="utf-8").strip()
 
 
 def load_main_agent_instructions() -> str:
-    """Load the full main-agent system prompt from docs."""
+    """Load the full main-agent system prompt from runtime resources."""
 
-    return _extract_markdown_code_block("### 1.2 完整 System Prompt 模板")
+    return _load_prompt_file("main_agent_system.txt")
 
 
 def load_category_research_template() -> str:
-    """Load the category-research prompt template from docs."""
+    """Load the category-research prompt template from runtime resources."""
 
-    return _extract_markdown_code_block("### 2.1 品类调研模板（Category Research Template）")
+    return _load_prompt_file("category_research.txt")
 
 
 def load_product_search_template() -> str:
-    """Load the product-search prompt template from docs."""
+    """Load the product-search prompt template from runtime resources."""
 
-    return _extract_markdown_code_block("### 2.2 产品搜索模板（Product Search Template）")
+    return _load_prompt_file("product_search.txt")

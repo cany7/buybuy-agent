@@ -1,6 +1,6 @@
 # INTERFACES.md — 接口契约与数据 Schema
 
-> 本文档定义所有组件间的接口契约：Pydantic 模型（Agent 输出）和 JSON Schema（持久化数据）。是 PROMPTS.md 和实现代码的权威参考。
+> 本文档定义所有组件间的接口契约：Pydantic 模型（Agent 输出）和 JSON Schema（持久化数据）。是开发文档与实现代码的权威参考；运行时 prompt 文本位于 `src/prompts/`，设计说明位于 `PROMPTS.md`。
 >
 > **Pydantic vs JSON 分界**：Pydantic 只覆盖 "LLM → 应用层" 的接口（`DecisionOutput`、`CategoryResearchOutput`、`ProductSearchOutput`）。持久化数据（session / knowledge / profile）使用 Plain JSON dict，Schema 在本文档中定义为文档约定。
 >
