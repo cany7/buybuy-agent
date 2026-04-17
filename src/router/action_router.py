@@ -6,8 +6,15 @@ from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
 from inspect import isawaitable
+from time import monotonic
 from typing import Any, Awaitable, Callable
 
+from pydantic import ValidationError
+
+from src.agents.research_agent import (
+    validate_category_research_output,
+    validate_product_search_output,
+)
 from src.models.research import CategoryResearchOutput, ProductSearchOutput, SearchMeta
 from src.store.document_store import DocumentStore
 
@@ -41,6 +48,17 @@ class RouteResult:
     session: SessionState
     replaced_pending_research_result: bool = False
     user_message_delivered: bool = False
+    action_metrics: dict[str, Any] | None = None
+
+
+@dataclass(slots=True)
+class ResearchExecutionResult:
+    """Result of running one research task with application-layer retry metadata."""
+
+    result: ResearchOutput | None
+    retry_count: int
+    failure_kind: str | None = None
+    error_message: str | None = None
 
 
 class ActionRouter:
@@ -78,6 +96,7 @@ class ActionRouter:
 
         if next_action in {"ask_user", "recommend"}:
             wait_for_user_input = True
+            action_metrics = {"result_type": next_action}
         elif next_action == "dispatch_product_search":
             action_payload = getattr(decision, "action_payload", None)
             if not isinstance(action_payload, dict):
@@ -89,23 +108,57 @@ class ActionRouter:
             if emit_user_message is not None:
                 await self._deliver_user_message(emit_user_message, user_message)
                 user_message_delivered = True
-            try:
-                result = await self._research_executor("dispatch_product_search", action_payload)
-            except ValueError as error:
+            started_at = monotonic()
+            execution = await self._execute_research_with_retry(
+                "dispatch_product_search",
+                action_payload,
+            )
+            research_duration_ms = int((monotonic() - started_at) * 1000)
+            if execution.failure_kind == "invalid_payload":
                 return self._handle_route_error(
                     working_session,
                     user_message=user_message,
-                    error_message=str(error),
+                    error_message=execution.error_message or "dispatch_product_search payload is invalid.",
                 )
-            if not isinstance(result, ProductSearchOutput):
-                return self._handle_route_error(
-                    working_session,
-                    user_message=user_message,
-                    error_message="dispatch_product_search must return ProductSearchOutput.",
+            product_degradation_error: str | None = None
+            if execution.result is None:
+                product_degradation_error = execution.error_message or "Product search failed."
+                product_result = self._build_failed_product_search_output(
+                    action_payload=action_payload,
+                    retry_count=execution.retry_count,
+                    reason=execution.failure_kind or "api_failure",
+                    error_message=product_degradation_error,
                 )
-            self._handle_product_search_result(working_session, result)
+            elif not isinstance(execution.result, ProductSearchOutput):
+                product_degradation_error = "ResearchOutput 结构化结果解析失败。"
+                product_result = self._build_failed_product_search_output(
+                    action_payload=action_payload,
+                    retry_count=execution.retry_count,
+                    reason="parse_failure",
+                    error_message=product_degradation_error,
+                )
+            else:
+                product_result = self._apply_product_search_retry_count(
+                    execution.result,
+                    execution.retry_count,
+                )
+            product_result, warnings = validate_product_search_output(product_result)
+            self._append_validation_warnings(working_session, warnings)
+            self._handle_product_search_result(working_session, product_result)
             replaced_pending_research_result = True
             should_continue = True
+            action_metrics = {
+                "result_type": "product_search",
+                "research_duration_ms": research_duration_ms,
+                "product_count": len(product_result.products),
+                "search_meta": product_result.search_meta.model_dump(mode="json"),
+                "executor_retry_count": execution.retry_count,
+                "degraded": product_degradation_error is not None,
+                "degradation_reason": execution.failure_kind,
+                "validation_warning_count": len(warnings),
+            }
+            if product_degradation_error is not None:
+                action_metrics["error"] = product_degradation_error
         elif next_action == "dispatch_category_research":
             action_payload = getattr(decision, "action_payload", None)
             if not isinstance(action_payload, dict):
@@ -117,23 +170,55 @@ class ActionRouter:
             if emit_user_message is not None:
                 await self._deliver_user_message(emit_user_message, user_message)
                 user_message_delivered = True
-            try:
-                result = await self._research_executor("dispatch_category_research", action_payload)
-            except ValueError as error:
+            started_at = monotonic()
+            execution = await self._execute_research_with_retry(
+                "dispatch_category_research",
+                action_payload,
+            )
+            research_duration_ms = int((monotonic() - started_at) * 1000)
+            if execution.failure_kind == "invalid_payload":
                 return self._handle_route_error(
                     working_session,
                     user_message=user_message,
-                    error_message=str(error),
+                    error_message=execution.error_message or "dispatch_category_research payload is invalid.",
                 )
-            if not isinstance(result, CategoryResearchOutput):
-                return self._handle_route_error(
-                    working_session,
-                    user_message=user_message,
-                    error_message="dispatch_category_research must return CategoryResearchOutput.",
+            category_degradation_error: str | None = None
+            if execution.result is None:
+                category_degradation_error = execution.error_message or "Category research failed."
+                category_result = self._build_failed_category_research_output(
+                    action_payload=action_payload,
+                    reason=execution.failure_kind or "api_failure",
+                    error_message=category_degradation_error,
                 )
-            self._handle_category_research_result(working_session, result)
+            elif not isinstance(execution.result, CategoryResearchOutput):
+                category_degradation_error = "ResearchOutput 结构化结果解析失败。"
+                category_result = self._build_failed_category_research_output(
+                    action_payload=action_payload,
+                    reason="parse_failure",
+                    error_message=category_degradation_error,
+                )
+            else:
+                category_result = execution.result
+            category_result, warnings = validate_category_research_output(category_result)
+            self._append_validation_warnings(working_session, warnings)
+            if category_degradation_error is None:
+                self._handle_category_research_result(working_session, category_result)
+            else:
+                self._handle_failed_category_research_result(working_session, category_result)
             replaced_pending_research_result = True
             should_continue = True
+            action_metrics = {
+                "result_type": "category_research",
+                "research_duration_ms": research_duration_ms,
+                "category": category_result.category,
+                "product_type": category_result.product_type_name,
+                "executor_retry_count": execution.retry_count,
+                "degraded": category_degradation_error is not None,
+                "degradation_reason": execution.failure_kind,
+                "validation_warning_count": len(warnings),
+            }
+            if category_degradation_error is not None:
+                action_metrics["error"] = category_degradation_error
         elif next_action == "onboard_user":
             try:
                 self._write_demographics(getattr(decision, "action_payload", None))
@@ -144,6 +229,7 @@ class ActionRouter:
                     error_message=str(error),
                 )
             wait_for_user_input = True
+            action_metrics = {"result_type": "onboard_user"}
         else:
             return self._handle_route_error(
                 working_session,
@@ -165,6 +251,7 @@ class ActionRouter:
             session=working_session,
             replaced_pending_research_result=replaced_pending_research_result,
             user_message_delivered=user_message_delivered,
+            action_metrics=action_metrics,
         )
 
     def _apply_session_updates(
@@ -182,6 +269,156 @@ class ActionRouter:
 
         for key, value in session_updates.items():
             session[key] = value
+
+    async def _execute_research_with_retry(
+        self,
+        task_type: str,
+        action_payload: dict[str, Any],
+    ) -> ResearchExecutionResult:
+        last_error: Exception | None = None
+        for attempt in range(2):
+            payload = (
+                deepcopy(action_payload)
+                if attempt == 0
+                else self._build_research_retry_payload(task_type, action_payload)
+            )
+            try:
+                result = await self._research_executor(task_type, payload)
+                return ResearchExecutionResult(result=result, retry_count=attempt)
+            except ValidationError as error:
+                return ResearchExecutionResult(
+                    result=None,
+                    retry_count=attempt,
+                    failure_kind="parse_failure",
+                    error_message=str(error),
+                )
+            except ValueError as error:
+                return ResearchExecutionResult(
+                    result=None,
+                    retry_count=attempt,
+                    failure_kind="invalid_payload",
+                    error_message=str(error),
+                )
+            except Exception as error:  # pragma: no cover - exercised in router tests
+                last_error = error
+                if attempt == 1:
+                    break
+
+        return ResearchExecutionResult(
+            result=None,
+            retry_count=1,
+            failure_kind="api_failure",
+            error_message=str(last_error) if last_error is not None else "Research execution failed.",
+        )
+
+    def _build_research_retry_payload(
+        self,
+        task_type: str,
+        action_payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        payload = deepcopy(action_payload)
+        retry_note = (
+            "这是一次失败后的重试。请更换搜索关键词组合，并扩大来源覆盖范围；"
+            "在保持核心约束不变的前提下，优先返回更稳妥、可验证的结构化结果。"
+        )
+        existing_brief = payload.get("research_brief")
+        if isinstance(existing_brief, str) and existing_brief.strip():
+            payload["research_brief"] = f"{existing_brief.rstrip()}\n{retry_note}"
+        else:
+            payload["research_brief"] = retry_note
+
+        if task_type == "dispatch_product_search":
+            payload["search_goal"] = f"{payload.get('search_goal', '')}".strip()
+        return payload
+
+    def _apply_product_search_retry_count(
+        self,
+        result: ProductSearchOutput,
+        retry_count: int,
+    ) -> ProductSearchOutput:
+        if retry_count <= result.search_meta.retry_count:
+            return result
+        updated_meta = result.search_meta.model_copy(update={"retry_count": retry_count})
+        return result.model_copy(update={"search_meta": updated_meta})
+
+    def _build_failed_product_search_output(
+        self,
+        *,
+        action_payload: dict[str, Any],
+        retry_count: int,
+        reason: str,
+        error_message: str,
+    ) -> ProductSearchOutput:
+        product_type = action_payload.get("product_type")
+        product_label = product_type if isinstance(product_type, str) and product_type.strip() else "当前产品"
+        if reason == "parse_failure":
+            notes = (
+                f"{product_label} 的研究结果结构化结果解析失败。"
+                "这轮我先不把不可靠的数据当作候选，建议你稍后重试，或先告诉我哪些约束可以放宽。"
+            )
+        else:
+            notes = (
+                f"{product_label} 暂时无法完成联网搜索。"
+                "这轮我先返回空结果，建议你稍后重试，或先告诉我哪些约束可以放宽。"
+            )
+        return ProductSearchOutput(
+            products=[],
+            search_meta=SearchMeta(
+                retry_count=retry_count,
+                result_status="failed",
+                search_expanded=False,
+                expansion_notes=error_message,
+            ),
+            notes=notes,
+            suggested_followup="可以稍后重试，或先调整预算、场景和硬约束后再搜。",
+        )
+
+    def _build_failed_category_research_output(
+        self,
+        *,
+        action_payload: dict[str, Any],
+        reason: str,
+        error_message: str,
+    ) -> CategoryResearchOutput:
+        category = action_payload.get("category")
+        product_type = action_payload.get("product_type")
+        category_name = category if isinstance(category, str) and category.strip() else "未知品类"
+        product_type_name = (
+            product_type
+            if isinstance(product_type, str) and product_type.strip()
+            else "未知产品类型"
+        )
+        if reason == "parse_failure":
+            notes = (
+                f"{category_name}/{product_type_name} 的研究结果结构化结果解析失败。"
+                "这轮我先保留空结果，并建议稍后重试。"
+            )
+        else:
+            notes = (
+                f"{category_name}/{product_type_name} 暂时无法完成品类调研。"
+                "这轮我先保留空结果，并建议稍后重试。"
+            )
+        return CategoryResearchOutput.model_validate(
+            {
+                "category": category_name,
+                "category_knowledge": {
+                    "data_sources": [],
+                    "product_type_overview": [],
+                    "shared_concepts": [],
+                    "brand_landscape": [],
+                },
+                "product_type_name": product_type_name,
+                "product_type_knowledge": {
+                    "subtypes": {},
+                    "decision_dimensions": [],
+                    "tradeoffs": [],
+                    "price_tiers": [],
+                    "scenario_mapping": [],
+                    "common_misconceptions": [],
+                },
+                "notes": notes,
+            }
+        )
 
     def _handle_product_search_result(
         self,
@@ -236,6 +473,25 @@ class ActionRouter:
             {
                 "category": result.category,
                 "product_type": result.product_type_name,
+            },
+        )
+
+    def _handle_failed_category_research_result(
+        self,
+        session: SessionState,
+        result: CategoryResearchOutput,
+    ) -> None:
+        session["pending_research_result"] = {
+            "type": "category_research",
+            "result": result.model_dump(mode="json"),
+        }
+        self._append_error_event(
+            session,
+            "category_research_failed",
+            {
+                "category": result.category,
+                "product_type": result.product_type_name,
+                "notes": result.notes,
             },
         )
 
@@ -317,16 +573,7 @@ class ActionRouter:
         user_message: str,
         error_message: str,
     ) -> RouteResult:
-        error_state = session.get("error_state")
-        if not isinstance(error_state, dict):
-            error_state = {}
-
-        validation_warnings = error_state.get("validation_warnings")
-        if not isinstance(validation_warnings, list):
-            validation_warnings = []
-        validation_warnings.append(error_message)
-        error_state["validation_warnings"] = validation_warnings
-        session["error_state"] = error_state
+        self._append_validation_warnings(session, [error_message])
         self._store.save_session(session)
 
         return RouteResult(
@@ -334,7 +581,16 @@ class ActionRouter:
             wait_for_user_input=True,
             should_continue=False,
             session=session,
+            action_metrics={"result_type": "error", "error": error_message},
         )
+
+    def _append_validation_warnings(self, session: SessionState, warnings: list[str]) -> None:
+        if not warnings:
+            return
+
+        error_state = self._ensure_error_state(session)
+        validation_warnings = error_state["validation_warnings"]
+        validation_warnings.extend(warnings)
 
     def _update_error_state_from_search_meta(
         self,

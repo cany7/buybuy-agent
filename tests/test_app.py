@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
 import pytest
 
-from src.app import ShoppingApplication
+from src.app import BoundaryConfig, ShoppingApplication
 from src.models.decision import DecisionOutput
 from src.models.research import SearchMeta
 from src.router.action_router import ActionRouter
@@ -44,6 +45,7 @@ class FakeRouteResult:
     session: dict[str, Any]
     replaced_pending_research_result: bool = False
     user_message_delivered: bool = False
+    action_metrics: dict[str, Any] | None = None
 
 
 def _search_meta(
@@ -59,6 +61,13 @@ def _search_meta(
         search_expanded=search_expanded,
         expansion_notes=expansion_notes,
     )
+
+
+def _append_session_log_record(store: DocumentStore, record: dict[str, Any]) -> None:
+    log_path = store.sessions_dir / "session_log.jsonl"
+    with log_path.open("a", encoding="utf-8") as file:
+        file.write(json.dumps(record, ensure_ascii=False))
+        file.write("\n")
 
 
 @pytest.mark.asyncio
@@ -81,6 +90,13 @@ async def test_app_creates_session_and_waits_for_user_input(tmp_path: Path) -> N
     assert result.wait_for_user_input is True
     assert saved_session is not None
     assert "session_id" in saved_session
+    log_path = store.sessions_dir / "session_log.jsonl"
+    assert log_path.exists()
+    record = json.loads(log_path.read_text(encoding="utf-8").strip())
+    assert record["level"] == "INFO"
+    assert record["user_input"] == "我想买冲锋衣"
+    assert record["decision"]["next_action"] == "ask_user"
+    assert record["next_action_result"]["wait_for_user_input"] is True
 
 
 @pytest.mark.asyncio
@@ -625,7 +641,7 @@ async def test_app_injects_soft_note_before_third_distinct_category_research(tmp
     assert "[系统标注] 本 session 已调研" not in captured_contexts[0]
     assert "[系统标注] 本 session 已调研" not in captured_contexts[1]
     assert "[系统标注] 本 session 已调研 2 个品类" in captured_contexts[2]
-    assert "[系统标注] 本 session 已调研 3 个品类" in captured_contexts[3]
+    assert "[系统标注] 本 session 已调研 2 个品类" in captured_contexts[3]
 
 
 @pytest.mark.asyncio
@@ -923,6 +939,474 @@ async def test_app_invalid_dispatch_payload_from_executor_is_recorded_without_cr
         saved_session["error_state"]["validation_warnings"][0]
         == "action_payload.search_goal is required and must be a non-empty string."
     )
+    log_path = store.sessions_dir / "session_log.jsonl"
+    record = json.loads(log_path.read_text(encoding="utf-8").strip())
+    assert record["level"] == "ERROR"
+    assert record["errors"] == ["action_payload.search_goal is required and must be a non-empty string."]
+
+
+@pytest.mark.asyncio
+async def test_app_logs_warning_level_for_stale_session(tmp_path: Path) -> None:
+    store = DocumentStore(base_dir=tmp_path / "data")
+    store.save_session(
+        {
+            "session_id": "2026-04-14-120000",
+            "last_updated": "2026-04-01T12:00:00",
+            "decision_progress": {"recommendation_round": "未开始"},
+        }
+    )
+
+    async def fake_research(task_type: str, payload: dict[str, object]):
+        raise AssertionError("research should not run")
+
+    app = ShoppingApplication(
+        store=store,
+        main_agent=FakeMainAgent([_decision(user_message="先确认这次还是同一个需求吗？")]),
+        action_router=ActionRouter(store=store, research_executor=fake_research),
+    )
+
+    await app.run_turn("继续上次的选购")
+
+    log_path = store.sessions_dir / "session_log.jsonl"
+    record = json.loads(log_path.read_text(encoding="utf-8").strip())
+
+    assert record["level"] == "WARNING"
+    assert "会话已暂停" in record["warnings"][0]
+
+
+@pytest.mark.asyncio
+async def test_app_retries_main_agent_once_after_api_failure(tmp_path: Path) -> None:
+    store = DocumentStore(base_dir=tmp_path / "data")
+
+    @dataclass
+    class FlakyMainAgent:
+        attempts: int = 0
+
+        async def run(self, context: str, user_message: str) -> DecisionOutput:
+            self.attempts += 1
+            if self.attempts == 1:
+                raise RuntimeError("temporary api failure")
+            return _decision(user_message="第二次调用成功")
+
+    async def fake_research(task_type: str, payload: dict[str, object]):
+        raise AssertionError("research should not run")
+
+    main_agent = FlakyMainAgent()
+    app = ShoppingApplication(
+        store=store,
+        main_agent=main_agent,
+        action_router=ActionRouter(store=store, research_executor=fake_research),
+    )
+
+    result = await app.run_turn("继续聊")
+
+    assert main_agent.attempts == 2
+    assert result.user_message == "第二次调用成功"
+    assert result.wait_for_user_input is True
+
+
+@pytest.mark.asyncio
+async def test_app_returns_service_unavailable_after_main_agent_api_failure_twice(
+    tmp_path: Path,
+) -> None:
+    store = DocumentStore(base_dir=tmp_path / "data")
+
+    @dataclass
+    class AlwaysFailingMainAgent:
+        attempts: int = 0
+
+        async def run(self, context: str, user_message: str) -> DecisionOutput:
+            self.attempts += 1
+            raise RuntimeError("main agent api unavailable")
+
+    async def fake_research(task_type: str, payload: dict[str, object]):
+        raise AssertionError("research should not run")
+
+    main_agent = AlwaysFailingMainAgent()
+    app = ShoppingApplication(
+        store=store,
+        main_agent=main_agent,
+        action_router=ActionRouter(store=store, research_executor=fake_research),
+    )
+
+    result = await app.run_turn("继续聊")
+    saved_session = store.load_session()
+    log_records = [
+        json.loads(line)
+        for line in (store.sessions_dir / "session_log.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+    assert main_agent.attempts == 2
+    assert result.wait_for_user_input is True
+    assert result.should_continue is False
+    assert "服务暂时不可用" in result.user_message
+    assert saved_session is not None
+    assert any(
+        event["type"] == "main_agent_api_failed"
+        for event in saved_session["error_state"]["events"]
+        if isinstance(event, dict)
+    )
+    assert log_records[-1]["level"] == "ERROR"
+
+
+@pytest.mark.asyncio
+async def test_app_retries_main_agent_once_after_decision_parse_failure(tmp_path: Path) -> None:
+    store = DocumentStore(base_dir=tmp_path / "data")
+
+    @dataclass
+    class FlakyParsingMainAgent:
+        attempts: int = 0
+
+        async def run(self, context: str, user_message: str) -> DecisionOutput:
+            self.attempts += 1
+            if self.attempts == 1:
+                raise ValueError("DecisionOutput parsing failed")
+            return _decision(user_message="重试后解析成功")
+
+    async def fake_research(task_type: str, payload: dict[str, object]):
+        raise AssertionError("research should not run")
+
+    main_agent = FlakyParsingMainAgent()
+    app = ShoppingApplication(
+        store=store,
+        main_agent=main_agent,
+        action_router=ActionRouter(store=store, research_executor=fake_research),
+    )
+
+    result = await app.run_turn("继续聊")
+
+    assert main_agent.attempts == 2
+    assert result.user_message == "重试后解析成功"
+
+
+@pytest.mark.asyncio
+async def test_app_returns_generic_message_after_decision_parse_failure_twice(tmp_path: Path) -> None:
+    store = DocumentStore(base_dir=tmp_path / "data")
+
+    @dataclass
+    class AlwaysFailingParsingMainAgent:
+        attempts: int = 0
+
+        async def run(self, context: str, user_message: str) -> DecisionOutput:
+            self.attempts += 1
+            raise ValueError("DecisionOutput parsing failed")
+
+    async def fake_research(task_type: str, payload: dict[str, object]):
+        raise AssertionError("research should not run")
+
+    main_agent = AlwaysFailingParsingMainAgent()
+    app = ShoppingApplication(
+        store=store,
+        main_agent=main_agent,
+        action_router=ActionRouter(store=store, research_executor=fake_research),
+    )
+
+    result = await app.run_turn("继续聊")
+    saved_session = store.load_session()
+
+    assert main_agent.attempts == 2
+    assert result.wait_for_user_input is True
+    assert "暂时没能稳定理解" in result.user_message
+    assert saved_session is not None
+    assert any(
+        event["type"] == "decision_parse_failed"
+        for event in saved_session["error_state"]["events"]
+        if isinstance(event, dict)
+    )
+
+
+@pytest.mark.asyncio
+async def test_app_injects_negative_feedback_note_after_threshold(tmp_path: Path) -> None:
+    store = DocumentStore(base_dir=tmp_path / "data")
+    store.save_session(
+        {
+            "session_id": "2026-04-16-200000",
+            "decision_progress": {"recommendation_round": "第一轮"},
+            "error_state": {
+                "constraint_conflicts": [],
+                "search_retries": 0,
+                "consecutive_negative_feedback": 2,
+                "validation_warnings": [],
+                "events": [],
+            },
+        }
+    )
+    captured_contexts: list[str] = []
+
+    @dataclass
+    class RecordingMainAgent:
+        async def run(self, context: str, user_message: str) -> DecisionOutput:
+            captured_contexts.append(context)
+            return _decision(user_message="我重新收拢一下需求。")
+
+    async def fake_research(task_type: str, payload: dict[str, object]):
+        raise AssertionError("research should not run")
+
+    app = ShoppingApplication(
+        store=store,
+        main_agent=RecordingMainAgent(),
+        action_router=ActionRouter(store=store, research_executor=fake_research),
+    )
+
+    await app.run_turn("这些都不太合适")
+
+    assert len(captured_contexts) == 1
+    assert "连续负面反馈已达到 2 轮" in captured_contexts[0]
+
+
+@pytest.mark.asyncio
+async def test_app_injects_requirement_mining_boundary_note_after_threshold(tmp_path: Path) -> None:
+    store = DocumentStore(base_dir=tmp_path / "data")
+    captured_contexts: list[str] = []
+
+    @dataclass
+    class RecordingMainAgent:
+        decisions: list[DecisionOutput]
+
+        async def run(self, context: str, user_message: str) -> DecisionOutput:
+            captured_contexts.append(context)
+            return self.decisions.pop(0)
+
+    async def fake_research(task_type: str, payload: dict[str, object]):
+        raise AssertionError("research should not run")
+
+    decisions = [
+        _decision(
+            user_message=f"第 {index + 1} 轮追问",
+            session_updates={"decision_progress": {"stage": "需求挖掘", "recommendation_round": "未开始"}},
+        )
+        for index in range(3)
+    ]
+    app = ShoppingApplication(
+        store=store,
+        main_agent=RecordingMainAgent(decisions),
+        action_router=ActionRouter(store=store, research_executor=fake_research),
+        boundary_config=BoundaryConfig(max_requirement_mining_turns=2),
+    )
+
+    await app.run_turn("第一轮")
+    await app.run_turn("第二轮")
+    await app.run_turn("第三轮")
+
+    assert len(captured_contexts) == 3
+    assert "## [系统标注] 边界保护提示" not in captured_contexts[0]
+    assert "## [系统标注] 边界保护提示" not in captured_contexts[1]
+    assert "需求挖掘阶段已达到 2 轮" in captured_contexts[2]
+
+
+@pytest.mark.asyncio
+async def test_app_injects_product_search_boundary_note_after_threshold(tmp_path: Path) -> None:
+    store = DocumentStore(base_dir=tmp_path / "data")
+    captured_contexts: list[str] = []
+
+    @dataclass
+    class RecordingMainAgent:
+        decisions: list[DecisionOutput]
+
+        async def run(self, context: str, user_message: str) -> DecisionOutput:
+            captured_contexts.append(context)
+            return self.decisions.pop(0)
+
+    async def fake_research(task_type: str, payload: dict[str, object]):
+        from src.models.research import ProductSearchOutput
+
+        return ProductSearchOutput(
+            products=[],
+            search_meta=_search_meta(
+                retry_count=0,
+                result_status="ok",
+                search_expanded=False,
+                expansion_notes=None,
+            ),
+            notes="搜索完成",
+            suggested_followup=None,
+        )
+
+    decisions = [
+        _decision(
+            next_action="dispatch_product_search",
+            action_payload={
+                "product_type": "冲锋衣",
+                "search_goal": f"第 {index + 1} 次搜索",
+                "constraints": {
+                    "budget": None,
+                    "key_requirements": ["防水"],
+                    "exclusions": [],
+                },
+            },
+        )
+        for index in range(2)
+    ]
+    app = ShoppingApplication(
+        store=store,
+        main_agent=RecordingMainAgent(decisions),
+        action_router=ActionRouter(store=store, research_executor=fake_research),
+        boundary_config=BoundaryConfig(recommended_product_search_limit=1),
+    )
+
+    await app.run_turn("第一次搜索")
+    await app.run_turn(None)
+
+    assert len(captured_contexts) == 2
+    assert "## [系统标注] 边界保护提示" not in captured_contexts[0]
+    assert "本 session 已执行 1 次产品搜索" in captured_contexts[1]
+
+
+@pytest.mark.asyncio
+async def test_app_blocks_third_distinct_category_research_before_dispatch(tmp_path: Path) -> None:
+    store = DocumentStore(base_dir=tmp_path / "data")
+    research_calls: list[str] = []
+
+    async def fake_research(task_type: str, payload: dict[str, object]):
+        from src.models.research import CategoryResearchOutput
+
+        research_calls.append(f"{payload['category']}:{payload['product_type']}")
+        return CategoryResearchOutput.model_validate(
+            {
+                "category": payload["category"],
+                "category_knowledge": {
+                    "data_sources": ["https://example.com/guide"],
+                    "product_type_overview": [],
+                    "shared_concepts": [],
+                    "brand_landscape": [],
+                },
+                "product_type_name": payload["product_type"],
+                "product_type_knowledge": {
+                    "subtypes": {},
+                    "decision_dimensions": [],
+                    "tradeoffs": [],
+                    "price_tiers": [],
+                    "scenario_mapping": [],
+                    "common_misconceptions": [],
+                },
+            }
+        )
+
+    app = ShoppingApplication(
+        store=store,
+        main_agent=FakeMainAgent(
+            [
+                _decision(
+                    next_action="dispatch_category_research",
+                    action_payload={
+                        "category": "户外装备",
+                        "product_type": "冲锋衣",
+                        "user_context": "第一次",
+                    },
+                ),
+                _decision(
+                    next_action="dispatch_category_research",
+                    action_payload={
+                        "category": "数码产品",
+                        "product_type": "耳机",
+                        "user_context": "第二次",
+                    },
+                ),
+                _decision(
+                    next_action="dispatch_category_research",
+                    action_payload={
+                        "category": "智能家居",
+                        "product_type": "扫地机器人",
+                        "user_context": "第三次",
+                    },
+                ),
+            ]
+        ),
+        action_router=ActionRouter(store=store, research_executor=fake_research),
+        boundary_config=BoundaryConfig(max_distinct_category_researches=2),
+    )
+
+    first = await app.run_turn("第一次")
+    second = await app.run_turn("第二次")
+    third = await app.run_turn("第三次")
+    saved_session = store.load_session()
+
+    assert first.should_continue is True
+    assert second.should_continue is True
+    assert third.should_continue is False
+    assert "已调研 2 个不同品类" in third.user_message
+    assert research_calls == ["户外装备:冲锋衣", "数码产品:耳机"]
+    assert saved_session is not None
+    assert [
+        event["type"]
+        for event in saved_session["error_state"]["events"]
+        if isinstance(event, dict)
+    ].count("dispatch_category_research") == 2
+    assert any(
+        event["type"] == "boundary_blocked"
+        for event in saved_session["error_state"]["events"]
+        if isinstance(event, dict)
+    )
+
+
+@pytest.mark.asyncio
+async def test_app_preempts_turns_after_max_session_turn_limit(tmp_path: Path) -> None:
+    store = DocumentStore(base_dir=tmp_path / "data")
+    store.save_session(
+        {
+            "session_id": "2026-04-16-120000",
+            "decision_progress": {"recommendation_round": "未开始"},
+        }
+    )
+    for turn in range(2):
+        _append_session_log_record(
+            store,
+            {
+                "timestamp": f"2026-04-16T12:00:0{turn}",
+                "level": "INFO",
+                "session_id": "2026-04-16-120000",
+                "user_input": f"历史输入 {turn}",
+                "decision": {
+                    "next_action": "ask_user",
+                    "user_message": "历史回复",
+                },
+                "stage": {"before": "需求挖掘", "after": "需求挖掘", "assessment": "需求挖掘"},
+                "next_action_result": {
+                    "next_action": "ask_user",
+                    "wait_for_user_input": True,
+                    "should_continue": False,
+                    "user_message_delivered": False,
+                    "details": {"result_type": "ask_user"},
+                },
+                "warnings": [],
+                "errors": [],
+            },
+        )
+
+    @dataclass
+    class FailingMainAgent:
+        async def run(self, context: str, user_message: str) -> DecisionOutput:
+            raise AssertionError("main agent should not run after hitting max_session_turns")
+
+    async def fake_research(task_type: str, payload: dict[str, object]):
+        raise AssertionError("research should not run")
+
+    app = ShoppingApplication(
+        store=store,
+        main_agent=FailingMainAgent(),
+        action_router=ActionRouter(store=store, research_executor=fake_research),
+        boundary_config=BoundaryConfig(max_session_turns=2),
+    )
+
+    result = await app.run_turn("继续聊")
+    saved_session = store.load_session()
+    log_records = [
+        json.loads(line)
+        for line in (store.sessions_dir / "session_log.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+    assert result.should_continue is False
+    assert "已达到 2 轮" in result.user_message
+    assert saved_session is not None
+    assert any(
+        event["type"] == "boundary_triggered"
+        for event in saved_session["error_state"]["events"]
+        if isinstance(event, dict)
+    )
+    assert log_records[-1]["level"] == "WARNING"
+    assert "max_session_turns" == log_records[-1]["next_action_result"]["details"]["boundary"]
 
 
 @pytest.mark.asyncio

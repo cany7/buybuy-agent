@@ -16,7 +16,39 @@
 - 后续：下一步或注意事项（可选）
 ```
 
+## 2026-04-17
+
+### [implementation] 完成 P3.5 的错误处理与降级
+- 文件：`src/app.py`、`src/router/action_router.py`、`src/utils/logger.py`、`tests/test_app.py`、`tests/test_action_router.py`、`docs/CHANGELOG.md`
+- 变更：
+  1. 为主 Agent 增加应用层重试与降级：LLM/API 调用失败时自动重试 1 次，连续失败后返回“服务暂时不可用”的友好消息；DecisionOutput 解析失败时同样重试 1 次，连续失败后返回保守通用消息
+  2. 为研究 dispatch 增加应用层重试与降级：研究执行异常时自动重试 1 次，并在重试时补充 `research_brief` 提示模型更换关键词策略；连续失败或返回不可解析结果时，为产品搜索生成可消费的空结果降级响应，并对品类调研生成不落 knowledge 的空结果交接
+  3. 为 `SessionLogger` 增加对 `action_metrics.error` 的 ERROR 识别，确保“降级但不中断”的 turn 也能被稳定记为错误而不是普通 warning
+  4. 在 outer loop context 中新增连续负面反馈提示：当 `error_state.consecutive_negative_feedback >= 2` 时，向主 Agent 注入“反思推荐策略并重新锚定需求”的系统标注
+  5. 补充回归测试，覆盖主 Agent 重试成功、主 Agent 双次失败降级、研究搜索重试成功、研究搜索双次失败降级、研究结果不可解析降级，以及连续负面反馈提示注入
+- 原因：对齐 `docs/TASKS.md` 的 P3.5 与 `SPEC.md §10.2`、`§10.4`、`§13.1` 的要求，保证异常情况下 outer loop 不崩溃且对用户保持透明降级
+
 ## 2026-04-16
+
+### [implementation] 完成 P3.4 的 outer-loop 边界保护
+- 文件：`src/app.py`、`src/utils/logger.py`、`tests/test_app.py`、`docs/CHANGELOG.md`
+- 变更：
+  1. 在应用层新增可配置的 `BoundaryConfig`，实现 session 最大轮数、需求挖掘追问轮数、品类调研上限、产品搜索软上限
+  2. 在主 Agent 调用前基于 JSONL 日志派生会话活动计数，并将需求挖掘 / 产品搜索的软提示注入 context
+  3. 在 outer loop 中拦截第 3 个不同品类的 `dispatch_category_research`，并在达到最大轮数后直接终止继续推进但保留当前 session
+  4. 扩展 session logger，对边界事件做 warning / error 归档，便于离线分析
+  5. 新增边界保护相关回归测试
+- 原因：对齐 `docs/TASKS.md` 中 P3.4 与 `SPEC.md §13.1`、`ARCHITECTURE.md §12.4` 的要求
+
+### [implementation] 完成 P3.2 / P3.3 的研究输出校验与每轮 JSONL 日志
+- 文件：`src/agents/research_agent.py`、`src/router/action_router.py`、`src/app.py`、`src/utils/logger.py`、`tests/test_action_router.py`、`tests/test_app.py`、`docs/CHANGELOG.md`
+- 变更：
+  1. 为研究结果新增应用层额外校验：产品搜索结果允许空列表返回，但会对非空产品的核心字段、价格结构与来源 URL 做 sanity check；品类调研结果会对关键子结构非空做检查
+  2. 校验命中时不打断 dispatch 主流程，而是把 warning 追加到 `error_state.validation_warnings`，并自动在研究结果 `notes` 中附加 `[系统校验警告]` 标注
+  3. 为 `ActionRouter` 增加 dispatch 结果摘要和研究耗时采集，供日志稳定记录 `search_meta`、产品数、品类调研目标等信息
+  4. 新增 `SessionLogger`，在每轮 outer loop 后向 `data/sessions/session_log.jsonl` 追加一条 JSONL，记录时间戳、用户输入、完整 `DecisionOutput`、stage 变化、`next_action` 执行结果、warning 与 error
+  5. 补充回归测试，覆盖“研究输出结构缺陷只记 warning 不崩溃”“每轮 turn 产生日志”“staleness 记为 WARNING”“dispatch 错误记为 ERROR”
+- 原因：按 `docs/TASKS.md` 收口 P3.2 / P3.3，确保研究输出的结构问题可观测、可降级，同时为后续离线分析与指标统计提供稳定日志来源
 
 ### [test] 补齐 4.1-4.3 集成链路的显式覆盖
 - 文件：`tests/test_app.py`、`docs/CHANGELOG.md`

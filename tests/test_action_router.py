@@ -7,7 +7,7 @@ from typing import Any, Literal
 import pytest
 
 from src.models.decision import DecisionOutput
-from src.models.research import CategoryResearchOutput, SearchMeta
+from src.models.research import CategoryResearchOutput, PriceInfo, ProductInfo, ProductSearchOutput, SearchMeta
 from src.router.action_router import ActionRouter
 from src.store.document_store import DocumentStore
 
@@ -238,6 +238,64 @@ async def test_router_maps_partial_search_meta_to_error_state_event(tmp_path: Pa
 
 
 @pytest.mark.asyncio
+async def test_router_dispatch_product_search_records_output_validation_warnings(
+    tmp_path: Path,
+) -> None:
+    store = DocumentStore(base_dir=tmp_path / "data")
+
+    async def fake_research(task_type: str, payload: dict[str, Any]) -> Any:
+        return ProductSearchOutput(
+            products=[
+                ProductInfo(
+                    name="  ",
+                    brand="BrandX",
+                    price=PriceInfo(display="", amount=0),
+                    specs={},
+                    features=[],
+                    pros=[],
+                    cons=[],
+                    sources=["not-a-url"],
+                    source_consistency="unknown",
+                )
+            ],
+            search_meta=_search_meta(
+                retry_count=0,
+                result_status="ok",
+                search_expanded=False,
+                expansion_notes=None,
+            ),
+            notes="搜索完成",
+            suggested_followup=None,
+        )
+
+    router = ActionRouter(store=store, research_executor=fake_research)
+    result = await router.route(
+        _decision(
+            next_action="dispatch_product_search",
+            action_payload={
+                "product_type": "冲锋衣",
+                "search_goal": "测试输出校验",
+                "constraints": {
+                    "budget": None,
+                    "key_requirements": ["防水"],
+                    "exclusions": [],
+                },
+            },
+        ),
+        {"session_id": "2026-04-14-100000"},
+    )
+
+    warnings = result.session["error_state"]["validation_warnings"]
+
+    assert result.should_continue is True
+    assert result.session["pending_research_result"]["result"]["notes"].startswith("搜索完成\n[系统校验警告]")
+    assert any("products[0].name" in warning for warning in warnings)
+    assert any("products[0].price.amount" in warning for warning in warnings)
+    assert result.action_metrics is not None
+    assert result.action_metrics["validation_warning_count"] > 0
+
+
+@pytest.mark.asyncio
 async def test_router_dispatch_category_research_records_dispatch_event(tmp_path: Path) -> None:
     store = DocumentStore(base_dir=tmp_path / "data")
 
@@ -283,6 +341,58 @@ async def test_router_dispatch_category_research_records_dispatch_event(tmp_path
     )
 
     assert result.session["error_state"]["events"][0]["type"] == "dispatch_category_research"
+
+
+@pytest.mark.asyncio
+async def test_router_dispatch_category_research_records_output_validation_warnings(
+    tmp_path: Path,
+) -> None:
+    store = DocumentStore(base_dir=tmp_path / "data")
+
+    async def fake_research(task_type: str, payload: dict[str, Any]) -> Any:
+        return CategoryResearchOutput.model_validate(
+            {
+                "category": "户外装备",
+                "category_knowledge": {
+                    "data_sources": [],
+                    "product_type_overview": [],
+                    "shared_concepts": [],
+                    "brand_landscape": [],
+                },
+                "product_type_name": "冲锋衣",
+                "product_type_knowledge": {
+                    "subtypes": {},
+                    "decision_dimensions": [],
+                    "tradeoffs": [],
+                    "price_tiers": [],
+                    "scenario_mapping": [],
+                    "common_misconceptions": [],
+                },
+                "notes": "调研完成",
+            }
+        )
+
+    router = ActionRouter(store=store, research_executor=fake_research)
+    result = await router.route(
+        _decision(
+            next_action="dispatch_category_research",
+            action_payload={
+                "category": "户外装备",
+                "product_type": "冲锋衣",
+                "user_context": "测试上下文",
+            },
+        ),
+        {"session_id": "2026-04-14-100000"},
+    )
+
+    warnings = result.session["error_state"]["validation_warnings"]
+
+    assert result.should_continue is True
+    assert result.session["pending_research_result"]["result"]["notes"].startswith("调研完成\n[系统校验警告]")
+    assert any("category_knowledge.data_sources" in warning for warning in warnings)
+    assert any("product_type_knowledge.decision_dimensions" in warning for warning in warnings)
+    assert result.action_metrics is not None
+    assert result.action_metrics["validation_warning_count"] == 4
 
 
 @pytest.mark.asyncio
@@ -651,3 +761,117 @@ async def test_router_handles_invalid_product_search_payload_without_crashing(tm
 
     assert research_called is False
     assert result.should_continue is False
+
+
+@pytest.mark.asyncio
+async def test_router_retries_product_search_once_after_research_failure(tmp_path: Path) -> None:
+    store = DocumentStore(base_dir=tmp_path / "data")
+    received_payloads: list[dict[str, Any]] = []
+
+    async def flaky_research(task_type: str, payload: dict[str, Any]) -> Any:
+        from src.models.research import ProductSearchOutput
+
+        received_payloads.append(payload)
+        if len(received_payloads) == 1:
+            raise RuntimeError("temporary upstream failure")
+        return ProductSearchOutput(
+            products=[],
+            search_meta=_search_meta(
+                retry_count=0,
+                result_status="ok",
+                search_expanded=False,
+                expansion_notes=None,
+            ),
+            notes="第二次成功",
+            suggested_followup=None,
+        )
+
+    router = ActionRouter(store=store, research_executor=flaky_research)
+    result = await router.route(
+        _decision(
+            next_action="dispatch_product_search",
+            action_payload={
+                "product_type": "冲锋衣",
+                "search_goal": "测试研究重试",
+                "constraints": {
+                    "budget": None,
+                    "key_requirements": ["防水"],
+                    "exclusions": [],
+                },
+            },
+        ),
+        {"session_id": "2026-04-14-100000"},
+    )
+
+    assert len(received_payloads) == 2
+    assert "research_brief" not in received_payloads[0]
+    assert "重试" in received_payloads[1]["research_brief"]
+    assert result.should_continue is True
+    assert result.session["pending_research_result"]["result"]["notes"] == "第二次成功"
+    assert result.session["pending_research_result"]["result"]["search_meta"]["retry_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_router_degrades_product_search_after_research_failure_twice(tmp_path: Path) -> None:
+    store = DocumentStore(base_dir=tmp_path / "data")
+    attempts = 0
+
+    async def always_fail(task_type: str, payload: dict[str, Any]) -> Any:
+        nonlocal attempts
+        attempts += 1
+        raise RuntimeError("search backend unavailable")
+
+    router = ActionRouter(store=store, research_executor=always_fail)
+    result = await router.route(
+        _decision(
+            next_action="dispatch_product_search",
+            action_payload={
+                "product_type": "冲锋衣",
+                "search_goal": "测试研究失败降级",
+                "constraints": {
+                    "budget": None,
+                    "key_requirements": ["防水"],
+                    "exclusions": [],
+                },
+            },
+        ),
+        {"session_id": "2026-04-14-100000"},
+    )
+
+    assert attempts == 2
+    assert result.should_continue is True
+    assert result.session["pending_research_result"]["result"]["products"] == []
+    assert result.session["pending_research_result"]["result"]["search_meta"]["result_status"] == "failed"
+    assert result.session["pending_research_result"]["result"]["search_meta"]["retry_count"] == 1
+    assert "暂时无法完成联网搜索" in result.session["pending_research_result"]["result"]["notes"]
+    assert result.session["error_state"]["events"][0]["type"] == "search_failed"
+
+
+@pytest.mark.asyncio
+async def test_router_degrades_product_search_when_research_output_is_unparseable(tmp_path: Path) -> None:
+    store = DocumentStore(base_dir=tmp_path / "data")
+
+    async def invalid_output(task_type: str, payload: dict[str, Any]) -> Any:
+        return {"products": "not-a-valid-output"}
+
+    router = ActionRouter(store=store, research_executor=invalid_output)
+    result = await router.route(
+        _decision(
+            next_action="dispatch_product_search",
+            action_payload={
+                "product_type": "冲锋衣",
+                "search_goal": "测试输出解析失败",
+                "constraints": {
+                    "budget": None,
+                    "key_requirements": ["防水"],
+                    "exclusions": [],
+                },
+            },
+        ),
+        {"session_id": "2026-04-14-100000"},
+    )
+
+    assert result.should_continue is True
+    assert result.session["pending_research_result"]["result"]["products"] == []
+    assert result.session["pending_research_result"]["result"]["search_meta"]["result_status"] == "failed"
+    assert "结构化结果解析失败" in result.session["pending_research_result"]["result"]["notes"]

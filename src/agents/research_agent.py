@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from typing import TypeVar
+from urllib.parse import urlparse
 
 from agent_framework import Agent
 from agent_framework.openai import OpenAIChatClient
@@ -23,6 +24,9 @@ ResearchOutput = CategoryResearchOutput | ProductSearchOutput
 
 DEFAULT_RESEARCH_BRIEF = "请根据任务目标，自主选择合适的搜索语言和关键词策略。"
 LOGGER = logging.getLogger(__name__)
+MAX_REASONABLE_PRICE_AMOUNT = 1_000_000
+VALID_SOURCE_CONSISTENCY = {"high", "medium", "low"}
+VALIDATION_NOTE_PREFIX = "[系统校验警告]"
 
 
 def _default_env_path() -> str:
@@ -140,6 +144,94 @@ def validate_research_payload(task_type: str, action_payload: Any) -> None:
     except ValueError as error:
         LOGGER.error("Research payload sanity check failed for %s: %s", task_type, error)
         raise
+
+
+def _build_validation_note(warnings: list[str]) -> str:
+    warning_summary = "；".join(warnings)
+    return f"{VALIDATION_NOTE_PREFIX} {warning_summary}"
+
+
+def _append_note(existing_notes: str | None, warnings: list[str]) -> str:
+    validation_note = _build_validation_note(warnings)
+    if isinstance(existing_notes, str) and existing_notes.strip():
+        return f"{existing_notes.rstrip()}\n{validation_note}"
+    return validation_note
+
+
+def _is_valid_source_url(source: str) -> bool:
+    parsed = urlparse(source)
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
+def validate_product_search_output(
+    result: ProductSearchOutput,
+) -> tuple[ProductSearchOutput, list[str]]:
+    """Run application-layer sanity checks on ProductSearchOutput."""
+
+    warnings: list[str] = []
+    for index, product in enumerate(result.products):
+        prefix = f"products[{index}]"
+        if not isinstance(product.name, str) or not product.name.strip():
+            warnings.append(f"{prefix}.name 不能为空。")
+        if not isinstance(product.brand, str) or not product.brand.strip():
+            warnings.append(f"{prefix}.brand 不能为空。")
+        if not isinstance(product.price.display, str) or not product.price.display.strip():
+            warnings.append(f"{prefix}.price.display 不能为空。")
+        if product.price.amount is not None:
+            if product.price.amount <= 0:
+                warnings.append(f"{prefix}.price.amount 必须大于 0。")
+            elif product.price.amount >= MAX_REASONABLE_PRICE_AMOUNT:
+                warnings.append(f"{prefix}.price.amount 疑似异常高价。")
+        if not isinstance(product.specs, dict) or not product.specs:
+            warnings.append(f"{prefix}.specs 应为非空对象。")
+        if not isinstance(product.features, list) or not product.features:
+            warnings.append(f"{prefix}.features 应为非空列表。")
+        if not isinstance(product.pros, list) or not product.pros:
+            warnings.append(f"{prefix}.pros 应为非空列表。")
+        if not isinstance(product.cons, list) or not product.cons:
+            warnings.append(f"{prefix}.cons 应为非空列表。")
+        if not isinstance(product.sources, list) or not product.sources:
+            warnings.append(f"{prefix}.sources 应为非空列表。")
+        elif any(not isinstance(source, str) or not _is_valid_source_url(source) for source in product.sources):
+            warnings.append(f"{prefix}.sources 应包含有效 URL。")
+        if product.source_consistency not in VALID_SOURCE_CONSISTENCY:
+            warnings.append(f"{prefix}.source_consistency 必须为 high/medium/low。")
+
+    if not warnings:
+        return result, warnings
+
+    LOGGER.warning("Research output validation warnings for product search: %s", warnings)
+    return result.model_copy(update={"notes": _append_note(result.notes, warnings)}), warnings
+
+
+def validate_category_research_output(
+    result: CategoryResearchOutput,
+) -> tuple[CategoryResearchOutput, list[str]]:
+    """Run application-layer sanity checks on CategoryResearchOutput."""
+
+    warnings: list[str] = []
+    if not result.category_knowledge.data_sources:
+        warnings.append("category_knowledge.data_sources 不应为空。")
+    if not result.category_knowledge.product_type_overview:
+        warnings.append("category_knowledge.product_type_overview 不应为空。")
+    if not result.product_type_knowledge.decision_dimensions:
+        warnings.append("product_type_knowledge.decision_dimensions 不应为空。")
+    if not result.product_type_knowledge.scenario_mapping:
+        warnings.append("product_type_knowledge.scenario_mapping 不应为空。")
+
+    if not warnings:
+        return result, warnings
+
+    LOGGER.warning("Research output validation warnings for category research: %s", warnings)
+    return result.model_copy(update={"notes": _append_note(result.notes, warnings)}), warnings
+
+
+def validate_research_output(result: ResearchOutput) -> tuple[ResearchOutput, list[str]]:
+    """Apply application-layer validation to a structured research result."""
+
+    if isinstance(result, ProductSearchOutput):
+        return validate_product_search_output(result)
+    return validate_category_research_output(result)
 
 
 def build_product_search_instructions(action_payload: dict[str, Any]) -> str:
