@@ -14,6 +14,7 @@ from src.agents.research_agent import (
     execute_research,
     validate_category_research_payload,
     validate_product_search_payload,
+    validate_research_payload,
 )
 from src.models.research import CategoryResearchOutput, ProductSearchOutput, SearchMeta
 
@@ -58,9 +59,24 @@ def test_validate_product_search_payload_accepts_unspecified_budget() -> None:
     validate_product_search_payload(_payload())
 
 
+def test_validate_product_search_payload_accepts_missing_optional_exclusions() -> None:
+    payload = _payload()
+    payload["constraints"].pop("exclusions")
+
+    validate_product_search_payload(payload)
+
+
 def test_validate_product_search_payload_rejects_missing_fields() -> None:
     with pytest.raises(ValueError):
         validate_product_search_payload({"product_type": "", "search_goal": "", "constraints": {}})
+
+
+def test_validate_product_search_payload_rejects_empty_key_requirements() -> None:
+    payload = _payload()
+    payload["constraints"]["key_requirements"] = []
+
+    with pytest.raises(ValueError, match="constraints.key_requirements must not be empty"):
+        validate_product_search_payload(payload)
 
 
 def test_validate_category_research_payload_accepts_required_fields() -> None:
@@ -112,6 +128,14 @@ def test_create_research_agent_registers_search_tool() -> None:
     assert len(runner.agent.default_options["tools"]) == 1
 
 
+def test_validate_research_payload_rejects_unsupported_task_type(caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level("ERROR"):
+        with pytest.raises(ValueError, match="Unsupported research task type."):
+            validate_research_payload("unsupported", _payload())
+
+    assert "Unsupported research task type for payload validation" in caplog.text
+
+
 @pytest.mark.asyncio
 async def test_execute_research_creates_new_agent_each_call(monkeypatch, tmp_path: Path) -> None:
     from src.agents import research_agent as module
@@ -147,6 +171,28 @@ async def test_execute_research_creates_new_agent_each_call(monkeypatch, tmp_pat
     assert second.suggested_followup == "关注透气性"
     assert len(created_runners) == 2
     assert created_runners[0] == created_runners[1]
+
+
+@pytest.mark.asyncio
+async def test_execute_research_logs_and_rejects_invalid_payload(
+    monkeypatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from src.agents import research_agent as module
+
+    def fail_create_research_agent(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("research agent should not be created for invalid payload")
+
+    monkeypatch.setattr(module, "create_research_agent", fail_create_research_agent)
+
+    payload = _payload()
+    payload["constraints"] = {}
+
+    with caplog.at_level("ERROR"):
+        with pytest.raises(ValueError, match="action_payload.constraints must not be empty."):
+            await execute_research("dispatch_product_search", payload, client=DummyClient())
+
+    assert "Research payload sanity check failed for dispatch_product_search" in caplog.text
 
 
 @pytest.mark.asyncio

@@ -18,6 +18,24 @@
 
 ## 2026-04-16
 
+### [test] 补齐 4.1-4.3 集成链路的显式覆盖
+- 文件：`tests/test_app.py`、`docs/CHANGELOG.md`
+- 变更：
+  1. 为外部循环补充显式 `ask_user -> dispatch_product_search -> recommend` 集成测试，断言 `pending_research_result` 设置、`candidate_products` 刷新、下一轮消费后清除 pending
+  2. 新增应用层测试，覆盖推荐完成时 `pending_profile_updates` 草稿写入
+  3. 新增品类调研创建并增量合并 knowledge 的应用层测试
+  4. 新增产品搜索空结果链路测试，以及研究执行前校验失败时应用层记录 warning 且不崩溃的测试
+- 原因：按 `docs/TESTING.md` 收口 `4.1-4.3` 中此前偏间接或不够显式的集成覆盖，使对应链路在应用层具备清晰回归保护
+
+### [implementation] 完成 P3.1 的研究任务 payload sanity check 收口
+- 文件：`src/agents/research_agent.py`、`tests/test_research_agent.py`、`docs/CHANGELOG.md`
+- 变更：
+  1. 为 `execute_research()` 增加统一的 task-specific payload sanity check 入口，在创建研究 Agent 前校验必填字段、关键字段非空以及基础类型合法性
+  2. 收紧 `dispatch_product_search` 的最小约束：`constraints` 不能为空对象，`key_requirements` 必须为非空字符串列表；同时将 `exclusions` 调整为真正可选，仅在提供时校验为字符串列表
+  3. 为非法 payload 和非法 `task_type` 增加错误日志记录，并在校验失败时直接拒绝执行研究任务
+  4. 补充研究侧单测，覆盖可选字段缺省、空关键列表、非法 task type，以及“非法 payload 不创建研究 Agent”的拒绝路径
+- 原因：按 `docs/TASKS.md` 完成 P3.1，确保 `execute_research()` 只承担 payload 完整性和基础合法性检查，不把语义级约束冲突下沉到系统层
+
 ### [test] 补齐 P2.6 Session 生命周期的启动与退出覆盖
 - 文件：`tests/test_app.py`、`tests/test_cli.py`、`docs/CHANGELOG.md`
 - 变更：

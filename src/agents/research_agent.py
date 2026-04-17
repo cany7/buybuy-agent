@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,6 +22,7 @@ ResponseModelT = TypeVar("ResponseModelT", bound=BaseModel)
 ResearchOutput = CategoryResearchOutput | ProductSearchOutput
 
 DEFAULT_RESEARCH_BRIEF = "请根据任务目标，自主选择合适的搜索语言和关键词策略。"
+LOGGER = logging.getLogger(__name__)
 
 
 def _default_env_path() -> str:
@@ -51,7 +53,21 @@ def _format_optional_value(value: Any, *, default: str) -> str:
     return str(value)
 
 
-def validate_product_search_payload(action_payload: dict[str, Any]) -> None:
+def _require_non_empty_string(value: Any, path: str) -> None:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{path} is required and must be a non-empty string.")
+
+
+def _validate_string_list(value: Any, path: str, *, allow_empty: bool) -> None:
+    if not isinstance(value, list):
+        raise ValueError(f"{path} must be a list.")
+    if not allow_empty and not value:
+        raise ValueError(f"{path} must not be empty.")
+    if any(not isinstance(item, str) or not item.strip() for item in value):
+        raise ValueError(f"{path} must contain non-empty strings.")
+
+
+def validate_product_search_payload(action_payload: Any) -> None:
     """Validate the minimal payload shape required for dispatch_product_search."""
 
     if not isinstance(action_payload, dict):
@@ -61,26 +77,36 @@ def validate_product_search_payload(action_payload: dict[str, Any]) -> None:
     search_goal = action_payload.get("search_goal")
     constraints = action_payload.get("constraints")
 
-    if not isinstance(product_type, str) or not product_type.strip():
-        raise ValueError("action_payload.product_type is required.")
-    if not isinstance(search_goal, str) or not search_goal.strip():
-        raise ValueError("action_payload.search_goal is required.")
+    _require_non_empty_string(product_type, "action_payload.product_type")
+    _require_non_empty_string(search_goal, "action_payload.search_goal")
     if not isinstance(constraints, dict):
         raise ValueError("action_payload.constraints must be an object.")
+    if not constraints:
+        raise ValueError("action_payload.constraints must not be empty.")
 
     key_requirements = constraints.get("key_requirements")
     exclusions = constraints.get("exclusions")
     budget = constraints.get("budget")
+    gender = constraints.get("gender")
+    scenario = constraints.get("scenario")
+    research_brief = action_payload.get("research_brief")
 
-    if not isinstance(key_requirements, list):
-        raise ValueError("constraints.key_requirements must be a list.")
-    if not isinstance(exclusions, list):
-        raise ValueError("constraints.exclusions must be a list.")
+    _validate_string_list(key_requirements, "constraints.key_requirements", allow_empty=False)
+    if exclusions is not None:
+        _validate_string_list(exclusions, "constraints.exclusions", allow_empty=True)
     if budget is not None and budget != "unspecified" and not isinstance(budget, str):
         raise ValueError("constraints.budget must be null, 'unspecified', or a string.")
+    if isinstance(budget, str) and budget != "unspecified" and not budget.strip():
+        raise ValueError("constraints.budget must not be an empty string.")
+    if gender is not None and not isinstance(gender, str):
+        raise ValueError("constraints.gender must be a string when provided.")
+    if scenario is not None and not isinstance(scenario, str):
+        raise ValueError("constraints.scenario must be a string when provided.")
+    if research_brief is not None and not isinstance(research_brief, str):
+        raise ValueError("action_payload.research_brief must be a string when provided.")
 
 
-def validate_category_research_payload(action_payload: dict[str, Any]) -> None:
+def validate_category_research_payload(action_payload: Any) -> None:
     """Validate the minimal payload shape required for dispatch_category_research."""
 
     if not isinstance(action_payload, dict):
@@ -89,13 +115,31 @@ def validate_category_research_payload(action_payload: dict[str, Any]) -> None:
     category = action_payload.get("category")
     product_type = action_payload.get("product_type")
     user_context = action_payload.get("user_context")
+    research_brief = action_payload.get("research_brief")
 
-    if not isinstance(category, str) or not category.strip():
-        raise ValueError("action_payload.category is required.")
-    if not isinstance(product_type, str) or not product_type.strip():
-        raise ValueError("action_payload.product_type is required.")
-    if not isinstance(user_context, str) or not user_context.strip():
-        raise ValueError("action_payload.user_context is required.")
+    _require_non_empty_string(category, "action_payload.category")
+    _require_non_empty_string(product_type, "action_payload.product_type")
+    _require_non_empty_string(user_context, "action_payload.user_context")
+    if research_brief is not None and not isinstance(research_brief, str):
+        raise ValueError("action_payload.research_brief must be a string when provided.")
+
+
+def validate_research_payload(task_type: str, action_payload: Any) -> None:
+    """Run task-specific payload sanity checks before creating the research agent."""
+
+    validator = {
+        "dispatch_product_search": validate_product_search_payload,
+        "dispatch_category_research": validate_category_research_payload,
+    }.get(task_type)
+    if validator is None:
+        LOGGER.error("Unsupported research task type for payload validation: %s", task_type)
+        raise ValueError("Unsupported research task type.")
+
+    try:
+        validator(action_payload)
+    except ValueError as error:
+        LOGGER.error("Research payload sanity check failed for %s: %s", task_type, error)
+        raise
 
 
 def build_product_search_instructions(action_payload: dict[str, Any]) -> str:
@@ -184,15 +228,15 @@ async def execute_research(
 ) -> ResearchOutput:
     """Run a research task for product search or category research."""
 
+    validate_research_payload(task_type, action_payload)
+
     if task_type == "dispatch_product_search":
-        validate_product_search_payload(action_payload)
         instructions = build_product_search_instructions(action_payload)
         task_prompt = (
             "请根据提供的约束执行产品搜索，并严格按 ProductSearchOutput 返回结构化结果。"
         )
         response_format: type[ResearchOutput] = ProductSearchOutput
     elif task_type == "dispatch_category_research":
-        validate_category_research_payload(action_payload)
         instructions = build_category_research_instructions(action_payload)
         task_prompt = (
             "请根据提供的品类调研任务执行搜索，并严格按 CategoryResearchOutput 返回结构化结果。"
