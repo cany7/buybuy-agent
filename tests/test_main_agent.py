@@ -6,7 +6,7 @@ from typing import Any
 import pytest
 
 from src.agents import main_agent as main_agent_module
-from src.agents.main_agent import MainAgentRunner, create_main_agent
+from src.agents.main_agent import MainAgentRunner, build_main_agent_client, create_main_agent
 from src.models.decision import DecisionOutput
 
 
@@ -73,3 +73,59 @@ def test_create_main_agent_uses_runtime_prompt_loader(monkeypatch: pytest.Monkey
     assert isinstance(runner, MainAgentRunner)
     assert captured["name"] == "main_agent"
     assert captured["instructions"] == "runtime prompt marker"
+
+
+def test_build_main_agent_client_uses_shared_default_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, Any] = {}
+
+    class FakeClient:
+        def __init__(self, **kwargs: Any) -> None:
+            captured.update(kwargs)
+
+    monkeypatch.setattr(main_agent_module, "OpenAIChatClient", FakeClient)
+    monkeypatch.setenv("LLM_BASE_URL", "https://openrouter.ai/api/v1")
+    monkeypatch.setenv("LLM_API_KEY", "shared-key")
+    monkeypatch.setenv("MAIN_AGENT_MODEL", "qwen/qwen3-235b-a22b")
+    monkeypatch.delenv("MAIN_AGENT_BASE_URL", raising=False)
+    monkeypatch.delenv("MAIN_AGENT_API_KEY", raising=False)
+    monkeypatch.setenv("SHOPPING_MAIN_AGENT_MODEL", "legacy-model")
+
+    build_main_agent_client()
+
+    assert captured["model"] == "qwen/qwen3-235b-a22b"
+    assert captured["base_url"] == "https://openrouter.ai/api/v1"
+    assert captured["api_key"] == "shared-key"
+    assert captured["env_file_path"] is None or captured["env_file_path"].endswith(".env")
+
+
+def test_build_main_agent_client_uses_agent_specific_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, Any] = {}
+
+    class FakeClient:
+        def __init__(self, **kwargs: Any) -> None:
+            captured.update(kwargs)
+
+    monkeypatch.setattr(main_agent_module, "OpenAIChatClient", FakeClient)
+    monkeypatch.setenv("LLM_BASE_URL", "https://shared.example/v1")
+    monkeypatch.setenv("LLM_API_KEY", "shared-key")
+    monkeypatch.setenv("MAIN_AGENT_MODEL", "gpt-4.1")
+    monkeypatch.setenv("MAIN_AGENT_BASE_URL", "https://main.example/v1")
+    monkeypatch.setenv("MAIN_AGENT_API_KEY", "main-key")
+
+    build_main_agent_client()
+
+    assert captured["model"] == "gpt-4.1"
+    assert captured["base_url"] == "https://main.example/v1"
+    assert captured["api_key"] == "main-key"
+
+
+def test_build_main_agent_client_rejects_partial_agent_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LLM_BASE_URL", "https://shared.example/v1")
+    monkeypatch.setenv("LLM_API_KEY", "shared-key")
+    monkeypatch.setenv("MAIN_AGENT_BASE_URL", "https://main.example/v1")
+    monkeypatch.delenv("MAIN_AGENT_API_KEY", raising=False)
+
+    with pytest.raises(ValueError, match="MAIN_AGENT_BASE_URL and MAIN_AGENT_API_KEY must be set together"):
+        build_main_agent_client()

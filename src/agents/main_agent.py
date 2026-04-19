@@ -2,30 +2,31 @@
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 from agent_framework import Agent
 from agent_framework.openai import OpenAIChatClient
-from dotenv import load_dotenv
 
 from src.agents.prompts import load_main_agent_instructions
 from src.models.decision import DecisionOutput
-
-
-def _default_env_path() -> str:
-    return str(Path(__file__).resolve().parents[2] / ".env")
+from src.utils.runtime_config import resolve_openai_compatible_client_config
 
 
 def build_main_agent_client(model: str | None = None) -> OpenAIChatClient:
     """Build the chat client used by the main agent."""
 
-    load_dotenv(_default_env_path(), override=False)
+    config = resolve_openai_compatible_client_config(
+        model_env_var="MAIN_AGENT_MODEL",
+        default_model="gpt-4o",
+        agent_base_url_env="MAIN_AGENT_BASE_URL",
+        agent_api_key_env="MAIN_AGENT_API_KEY",
+    )
     return OpenAIChatClient(
-        model=model or os.getenv("SHOPPING_MAIN_AGENT_MODEL", "gpt-4o"),
-        env_file_path=_default_env_path(),
+        model=model or config.model,
+        base_url=config.base_url,
+        api_key=config.api_key,
+        env_file_path=config.env_file_path,
     )
 
 

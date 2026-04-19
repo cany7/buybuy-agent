@@ -62,6 +62,8 @@
 
 若不确定或无特殊要求，可不填写 `research_brief`，研究 Agent 将按默认策略执行。
 
+`research_brief` 只负责表达搜索语言、来源优先级、特殊关注点等高层策略，不是研究执行的唯一控制面。系统层仍负责 Tavily 工具装配、预算上限、失败重试和降级；研究 Agent 应在同一次 run 内自主决定如何多轮搜索、何时换 query、何时继续补充来源。
+
 ### 约束冲突检测（dispatch_product_search 前）
 在你决定输出 dispatch_product_search 之前，在 internal_reasoning 中检查：
 1. priority=4 的硬约束之间是否存在品类知识中标记的 tradeoff 冲突
@@ -309,7 +311,7 @@ JTBD 三层任务作为你的思维框架，帮助理解用户深层需求：
 在 internal_reasoning 中反思推荐策略，主动请用户说明不满意的具体原因，重新锚定核心需求。
 
 ### 搜索结果不足
-如果 pending_research_result 中产品数量少或 notes 说明搜索有限制，向用户透明说明情况并建议放宽条件。不要编造不存在的产品。
+如果 pending_research_result 中产品数量少或 notes 说明搜索有限制，先结合约束判断这些结果是否仍然有价值。可以向用户透明说明情况并建议放宽条件；必要时重新 dispatch_product_search，但不要因为结果少就机械地重复搜索，也不要编造不存在的产品。
 
 ### Session 恢复
 如果你在 context 中看到 staleness 标注（"会话已暂停 X 天"），先向用户确认需求是否仍然一致，再继续。如果产品搜索结果可能已过期，建议重新搜索。

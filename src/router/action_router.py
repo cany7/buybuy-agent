@@ -138,10 +138,14 @@ class ActionRouter:
                     error_message=product_degradation_error,
                 )
             else:
-                product_result = self._apply_product_search_retry_count(
+                product_result = self._normalize_product_search_meta(
                     execution.result,
                     execution.retry_count,
                 )
+            product_result = self._normalize_product_search_meta(
+                product_result,
+                execution.retry_count,
+            )
             product_result, warnings = validate_product_search_output(product_result)
             self._append_validation_warnings(working_session, warnings)
             self._handle_product_search_result(working_session, product_result)
@@ -331,15 +335,20 @@ class ActionRouter:
             payload["search_goal"] = f"{payload.get('search_goal', '')}".strip()
         return payload
 
-    def _apply_product_search_retry_count(
+    def _normalize_product_search_meta(
         self,
         result: ProductSearchOutput,
         retry_count: int,
     ) -> ProductSearchOutput:
-        if retry_count <= result.search_meta.retry_count:
+        normalized_meta = result.search_meta.model_copy(
+            update={
+                "retry_count": retry_count,
+                "search_expanded": retry_count > 0 or result.search_meta.search_expanded,
+            }
+        )
+        if normalized_meta == result.search_meta:
             return result
-        updated_meta = result.search_meta.model_copy(update={"retry_count": retry_count})
-        return result.model_copy(update={"search_meta": updated_meta})
+        return result.model_copy(update={"search_meta": normalized_meta})
 
     def _build_failed_product_search_output(
         self,

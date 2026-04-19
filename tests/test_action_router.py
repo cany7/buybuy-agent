@@ -148,9 +148,10 @@ async def test_router_dispatch_product_search_writes_pending_result_and_candidat
     assert events == ["message:继续补充信息。", "research"]
     assert result.session["pending_research_result"]["type"] == "product_search"
     assert result.session["candidate_products"]["notes"] == "搜索完成"
-    assert result.session["candidate_products"]["search_meta"]["retry_count"] == 1
-    assert result.session["error_state"]["search_retries"] == 1
+    assert result.session["candidate_products"]["search_meta"]["retry_count"] == 0
+    assert result.session["error_state"]["search_retries"] == 0
     assert result.session["error_state"]["events"][0]["type"] == "insufficient_results"
+    assert result.session["error_state"]["events"][0]["details"]["search_expanded"] is True
     assert result.session["decision_progress"]["recommendation_round"] == "未开始"
 
 
@@ -233,8 +234,9 @@ async def test_router_maps_partial_search_meta_to_error_state_event(tmp_path: Pa
         {"session_id": "2026-04-14-100000"},
     )
 
-    assert result.session["error_state"]["search_retries"] == 2
+    assert result.session["error_state"]["search_retries"] == 0
     assert result.session["error_state"]["events"][0]["type"] == "partial_search_result"
+    assert result.session["error_state"]["events"][0]["details"]["search_expanded"] is True
 
 
 @pytest.mark.asyncio
@@ -911,7 +913,7 @@ async def test_router_retries_product_search_once_after_research_failure(tmp_pat
         return ProductSearchOutput(
             products=[],
             search_meta=_search_meta(
-                retry_count=0,
+                retry_count=9,
                 result_status="ok",
                 search_expanded=False,
                 expansion_notes=None,
@@ -943,6 +945,7 @@ async def test_router_retries_product_search_once_after_research_failure(tmp_pat
     assert result.should_continue is True
     assert result.session["pending_research_result"]["result"]["notes"] == "第二次成功"
     assert result.session["pending_research_result"]["result"]["search_meta"]["retry_count"] == 1
+    assert result.session["pending_research_result"]["result"]["search_meta"]["search_expanded"] is True
 
 
 @pytest.mark.asyncio

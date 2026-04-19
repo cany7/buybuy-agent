@@ -138,7 +138,8 @@
 | 非法 `next_action` | 不在枚举中的值 | 记录错误，不崩溃 |
 | 非法 payload 格式 | `dispatch_product_search` 缺少必要字段 | 记录错误，不崩溃 |
 | `candidate_products` 刷新 | `dispatch_product_search` 后处理 | 保存 research agent 初筛候选池 |
-| 研究搜索元信息映射 | `ProductSearchOutput.search_meta` 表示重试/扩搜/结果状态 | 应用层稳定写入 `error_state.search_retries` 与 `events` |
+| 研究搜索元信息映射 | `ProductSearchOutput.search_meta` 表示重试/扩搜/结果状态 | 应用层稳定写入 `error_state.search_retries` 与 `events`，并对 `retry_count/search_expanded` 做规范化 |
+| 研究 run 生命周期 | 连续两次 `dispatch_product_search` 或 `dispatch_category_research` | 每次 dispatch 都创建新的临时 research run，不复用上一次子 Agent 中间上下文 |
 | `pending_research_result` 清除 | 上一轮存在 pending 且本轮已消费 | 后置检查后被移除 |
 | 后置检查：画像草稿 | `recommendation_round` 从非完成变为 `"完成"` | 写入 `pending_profile_updates` 草稿 |
 | 恢复检查：送礼 | `intent="送礼"` 且存在 `pending_profile_updates` | 跳过自用画像更新 |
@@ -154,6 +155,19 @@
 | 产品搜索建议次数 | 第 7 次 `dispatch_product_search` | 给出软提示 |
 | 连续负面反馈提示 | `consecutive_negative_feedback >= 2` | 在 context 中注入重新锚定需求与反思推荐策略的提示 |
 | 阈值可配置 | 修改配置值 | 按新阈值执行 |
+
+---
+
+### 3.5 Agent Client 与环境变量配置
+
+| 测试用例 | 验证内容 | 预期结果 |
+|---------|---------|---------|
+| 主 Agent 共享默认配置 | 仅设置 `LLM_BASE_URL` / `LLM_API_KEY` / `MAIN_AGENT_MODEL` | 主 Agent 使用共享 endpoint/key 与主 Agent 模型 |
+| 主 Agent 专属覆盖 | 同时设置 `MAIN_AGENT_BASE_URL` / `MAIN_AGENT_API_KEY` | 主 Agent 专属配置覆盖共享默认 |
+| 研究 Agent 共享默认配置 | 仅设置 `LLM_BASE_URL` / `LLM_API_KEY` / `RESEARCH_AGENT_MODEL` | 研究 Agent 使用共享 endpoint/key 与研究 Agent 模型 |
+| 研究 Agent 专属覆盖 | 同时设置 `RESEARCH_AGENT_BASE_URL` / `RESEARCH_AGENT_API_KEY` | 研究 Agent 专属配置覆盖共享默认 |
+| Tavily key 缺失 | 未设置 `TAVILY_API_KEY` | 研究搜索启动失败并返回清晰错误 |
+| `.env.example` 完整性 | 检查示例文件 | 包含共享默认、双 Agent 覆盖和 Tavily 所需变量 |
 
 ---
 

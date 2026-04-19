@@ -3,21 +3,19 @@
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 from typing import TypeVar
 from urllib.parse import urlparse
 
-from agent_framework import Agent
+from agent_framework import Agent, FunctionInvocationConfiguration
 from agent_framework.openai import OpenAIChatClient
-from dotenv import load_dotenv
 from pydantic import BaseModel
 
 from src.agents.prompts import load_category_research_template, load_product_search_template
 from src.agents.tools import search_web
 from src.models.research import CategoryResearchOutput, ProductSearchOutput
+from src.utils.runtime_config import resolve_openai_compatible_client_config
 
 ResponseModelT = TypeVar("ResponseModelT", bound=BaseModel)
 ResearchOutput = CategoryResearchOutput | ProductSearchOutput
@@ -27,23 +25,28 @@ LOGGER = logging.getLogger(__name__)
 MAX_REASONABLE_PRICE_AMOUNT = 1_000_000
 VALID_SOURCE_CONSISTENCY = {"high", "medium", "low"}
 VALIDATION_NOTE_PREFIX = "[系统校验警告]"
-
-
-def _default_env_path() -> str:
-    return str(Path(__file__).resolve().parents[2] / ".env")
-
-
-def _data_dir() -> Path:
-    return Path(__file__).resolve().parents[2] / "data"
+FUNCTION_INVOCATION_GUARDRAILS: FunctionInvocationConfiguration = {
+    "max_iterations": 10,
+    "max_function_calls": 20,
+    "max_consecutive_errors_per_request": 2,
+}
 
 
 def build_research_agent_client(model: str | None = None) -> OpenAIChatClient:
     """Build the chat client used by the research agent."""
 
-    load_dotenv(_default_env_path(), override=False)
+    config = resolve_openai_compatible_client_config(
+        model_env_var="RESEARCH_AGENT_MODEL",
+        default_model="gpt-4o-mini",
+        agent_base_url_env="RESEARCH_AGENT_BASE_URL",
+        agent_api_key_env="RESEARCH_AGENT_API_KEY",
+    )
     return OpenAIChatClient(
-        model=model or os.getenv("SHOPPING_RESEARCH_AGENT_MODEL", "gpt-4o-mini"),
-        env_file_path=_default_env_path(),
+        model=model or config.model,
+        base_url=config.base_url,
+        api_key=config.api_key,
+        env_file_path=config.env_file_path,
+        function_invocation_configuration=FUNCTION_INVOCATION_GUARDRAILS,
     )
 
 

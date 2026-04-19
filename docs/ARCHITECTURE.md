@@ -10,11 +10,30 @@
 |------|---------|
 | 语言 | Python |
 | Agent 框架 | Microsoft Agent Framework (MAF) |
-| LLM 接口 | MAF 内置多模型支持（OpenAI / Anthropic / Google） |
+| LLM 接口 | OpenAI-compatible Chat API（当前通过 MAF 的 `OpenAIChatClient` 接入） |
 | 结构化输出 | Pydantic（MAF 原生集成 `output_type`） |
 | 数据持久化 | 本地 JSON 文件（`data/` 目录） |
-| 搜索能力 | 模型内置 web search（推荐）或 Tavily / SerpAPI 包装 |
+| 搜索能力 | Tavily FunctionTool（当前唯一搜索工具口径） |
 | 用户界面 | CLI（V1） |
+
+### 1.1 运行时配置口径
+
+LLM 配置统一采用 OpenAI-compatible env 合同：
+
+- `LLM_BASE_URL`
+- `LLM_API_KEY`
+- `MAIN_AGENT_MODEL`
+- `RESEARCH_AGENT_MODEL`
+- `MAIN_AGENT_BASE_URL`
+- `MAIN_AGENT_API_KEY`
+- `RESEARCH_AGENT_BASE_URL`
+- `RESEARCH_AGENT_API_KEY`
+- `TAVILY_API_KEY`
+
+优先级约定：
+
+- Agent 专属配置优先于共享默认配置
+- 共享默认配置优先于代码默认值
 
 ---
 
@@ -54,7 +73,7 @@
 │  │  • 输出：DecisionOutput（Pydantic 结构化）                  │       │
 │  │  • 每次调用 = 一次 LLM 推理，无内部工具调用循环              │       │
 │  │  • instructions：策略规则全集                               │       │
-│  │  • model：GPT-4o / Claude Opus                            │       │
+│  │  • model：由 env 配置的主 Agent 模型                        │       │
 │  │                                                           │       │
 │  └───────────────────────────────────────────────────────────┘       │
 │          │ 输出 DecisionOutput                                       │
@@ -75,11 +94,12 @@
 │  ┌───────────────────────────────────────────────────────────┐       │
 │  │            研究 Sub-Agent（有工具，MAF管理内部循环）         │       │
 │  │                                                           │       │
-│  │  • tools：web_search（内置或 Tavily API 包装）             │       │
-│  │  • 每次调用新建实例，完成后销毁（独立 context）             │       │
+│  │  • tools：`search_web`（Tavily API 包装）                  │       │
+│  │  • 一次 dispatch = 一次临时 research run                  │       │
+│  │  • run 内使用单一上下文；完成后销毁，不长期保留            │       │
 │  │  • MAF 管理内部工具调用循环：                               │       │
 │  │    LLM→搜索→结果→再推理→再搜索→...→ResearchOutput          │       │
-│  │  • model：GPT-4o-mini / Gemini Flash                     │       │
+│  │  • model：由 env 配置的研究 Agent 模型                      │       │
 │  │  • 输出：ResearchOutput（Pydantic 结构化）                  │       │
 │  │                                                           │       │
 │  └───────────────────────────────────────────────────────────┘       │
@@ -100,8 +120,8 @@
 ┌───────────────────────────▼──────────────────────────────────────────┐
 │                       外部服务层                                      │
 │                                                                      │
-│  • LLM Providers — OpenAI / Anthropic / Google API                   │
-│  • Web Search    — 模型内置搜索 或 Tavily / SerpAPI                   │
+│  • LLM Endpoint — OpenAI-compatible API                              │
+│  • Web Search   — Tavily API                                         │
 │                                                                      │
 └──────────────────────────────────────────────────────────────────────┘
 ```
@@ -319,21 +339,9 @@ ReAct 的 Observe → Reason → Act 发生在外部循环的每一轮：
 2. 所有系统动作（dispatch、文件写入、返回用户消息等）由应用层根据 `next_action` 执行
 3. 不存在"需要中途获取外部信息再继续推理"的场景
 
-### 5.2 研究 Agent：搜索工具
+### 5.2 研究 Agent：Tavily 搜索工具
 
-研究 Agent 需要在推理过程中主动搜索互联网，因此需要工具。有两种实现方式：
-
-**方式一：使用模型内置 web search（推荐，如果可用）**
-
-现代 LLM 很多自带 web search 能力。例如使用 OpenAI 的 GPT-4o-mini 时，可以直接开启内置 web search tool：
-- 模型自主决定何时搜索、搜索什么关键词
-- API 底层自动执行搜索引擎查询、抓取网页内容、返回给模型
-- **不需要 `fetch_page`**——搜索+读取网页在底层是一体化的
-- 不需要写任何自定义工具代码
-
-**方式二：包装第三方搜索 API**
-
-如果研究 Agent 使用不带内置搜索的模型（如 Claude），或需要更多控制：
+研究 Agent 需要在推理过程中主动搜索互联网。当前系统口径只保留一个搜索工具：`search_web`，其底层由 Tavily 提供。
 
 ```python
 from tavily import TavilyClient
@@ -355,7 +363,29 @@ research_agent = Agent(
 > **FunctionTool 的含义**：就是写一个普通的 Python 函数（如上面的 `search_web`），传给 MAF Agent 的 `tools` 参数。MAF 自动从函数签名、类型注解和 docstring 中提取信息，生成 LLM 可理解的工具描述。LLM 在推理时决定要调用这个函数时，MAF 自动执行它并把结果返回给 LLM。
 
 > [!NOTE]
-> **Tavily 这类 AI 搜索 API 的特点**：不仅返回搜索结果标题和 URL，还会自动抓取并返回网页的完整内容摘要。所以使用 Tavily 时只需要一个 `search_web` 工具，不需要单独的 `fetch_page`——搜索和内容读取是一步完成的。
+> **Tavily 的定位**：它既提供搜索结果，也返回网页内容摘要，因此当前设计只保留一个 `search_web` 工具，不单独引入 `fetch_page`。
+
+### 5.3 研究 run 策略
+
+研究 Agent 采用“增强版方案 A”：
+
+- 一次 `dispatch_product_search` / `dispatch_category_research` 对应一次临时 research run
+- run 内只有一个子 Agent 上下文，由 MAF 管理其多轮工具调用循环
+- 中途不拆分多个子 Agent session，也不切换 session
+- run 完成后销毁上下文；长期只保留结构化研究结果及其摘要信息
+- 搜索策略以广度优先为主：允许研究 Agent 在同一次 run 内更积极地多轮调用 Tavily、主动更换 query、扩大来源覆盖
+- 系统层只提供薄护栏：预算上限、执行失败重试、基础校验和降级；不在应用层实现固定搜索流程编排器
+
+### 5.4 轻量证据管理
+
+研究 Agent 可以在一次 run 内查看较多搜索结果；系统不默认对普通网页做激进裁剪，也不要求先做独立摘要再给模型。
+
+当前推荐的证据管理原则是：
+
+- 优先保留搜索广度，让模型在同一次 run 内自行判断哪些来源值得继续深挖
+- 不把“固定截断网页内容”作为默认策略
+- 仅做轻量处理：URL 去重、明显重复结果去重、极长 raw content 的极端保护
+- 不要求把广度阶段看到的所有原始网页内容等权保留到最终分析
 
 ---
 
@@ -534,7 +564,7 @@ if session:
 
 ## 八、研究 Agent 独立 context 实现
 
-每次 dispatch 创建新实例 = 新 context = 天然隔离：
+每次 dispatch 创建新实例 = 一次临时 research run = 天然隔离：
 
 ```python
 async def execute_research(task_type: str, action_payload: dict) -> ResearchOutput:
@@ -569,23 +599,26 @@ async def execute_research(task_type: str, action_payload: dict) -> ResearchOutp
         )
         output_model = ProductSearchOutput
 
-    # 2. 创建研究 Agent 实例（新 context）
+    # 2. 创建研究 Agent 实例（单次 run 的临时上下文）
     research_agent = Agent(
         name="research_agent",
         instructions=instructions,
-        model="gpt-4o-mini",
-        tools=[search_web],          # 或使用模型内置搜索
+        model=os.getenv("RESEARCH_AGENT_MODEL", "gpt-4o-mini"),
+        tools=[search_web],
         output_type=output_model,
     )
 
     # 3. 运行（MAF 管理内部搜索循环）
     result = await research_agent.run(task_prompt)
 
-    # 4. Agent 实例回收，context 销毁
+    # 4. run 完成后，Agent 实例回收，运行态上下文销毁
     return result
 ```
 
 **Pydantic `output_type` 的作用**：MAF 自动从 Pydantic 模型提取 JSON schema 传给 LLM 的 structured output 模式。研究 Agent 的输出被约束为指定的结构——不需要额外的 `extract_product_info` 工具，结构化提取由 LLM 原生完成。
+
+> [!IMPORTANT]
+> 这里的“独立 context”指的是一次 dispatch 对应的一次临时 research run。它不是单独的长期会话，也不会在多次 dispatch 之间复用或保留中间工具历史。
 
 ---
 
@@ -746,10 +779,11 @@ Instructions 保持策略规则全集，用阶段标题组织，LLM 根据 sessi
 | candidate_products 刷新 | dispatch_product_search 后将研究 Agent 初筛结果刷新为活动候选池 | Dispatch 后处理 |
 | recommendation_round 自动重置 | dispatch_product_search 后重置为 "未开始" | Dispatch 后处理 |
 | 长期画像恢复写入 | 启动时检查 `pending_profile_updates` → 通过恢复规则后写入长期画像 | 启动恢复检查 |
-| 搜索策略传递 | 主 Agent 在 dispatch payload 中传 research_brief → 填入 prompt 模板 | execute_research() |
+| 搜索策略传递 | 主 Agent 在 dispatch payload 中传 `research_brief`；系统层负责模板填充、预算上限和失败重试等薄护栏 | execute_research() |
 | staleness 检测 | 计算 last_updated 距今天数 → 注入标注 | SessionContextProvider |
 | 边界保护 | 检查最大轮数、最大 dispatch 次数 | 外部循环 |
 | 研究 Agent 生命周期 | 创建 → 运行 → 销毁 → 后处理 | execute_research() |
+| LLM env 解析 | 按“Agent 专属 > 共享默认 > 代码默认值”的顺序解析 endpoint/key/model | Agent client factory |
 | 活跃 session 保留 | current_session 作为运行锚点长期保留；历史 session 默认不进 context | Session 生命周期管理 |
 | session_id 生成 | 格式 `{date}-{HHMMSS}` | 新会话创建时 |
 

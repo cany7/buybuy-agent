@@ -219,6 +219,10 @@ class ProductSearchOutput(BaseModel):
 > - `result_status`: `"ok" | "insufficient_results" | "partial_results" | "failed"`
 > - `search_expanded`: `bool`
 > - `expansion_notes`: `str | null`
+>
+> 其中：
+> - `retry_count` 和 `search_expanded` 由应用层视实际运行过程做规范化，不能简单假设为模型自报 telemetry
+> - `result_status` 可由研究 Agent 给出初始判断，但应用层保留根据降级和后处理进行规范化的权利
 
 ---
 
@@ -292,7 +296,8 @@ class ProductSearchOutput(BaseModel):
 > - `budget` 为**可选约束字段**：若当前任务预算未知、非阻塞，或用户明确要求先不看预算，可显式传 `null` 或 `"unspecified"`
 > - `budget` 可能是区间（如 "2500-3500"）而非单一数字，应用层**不尝试做数值解析**
 > - `exclusions` 传递用户在 session 或 category_preferences 中已表达的排斥偏好（`anti_preferences`），由主 Agent 在 CoT 中综合两个来源写入
-> - `research_brief` 由主 Agent 根据 location、用户语言、品类特征等综合判断后填写，系统层只负责填充到 prompt 模板
+> - `research_brief` 由主 Agent 根据 location、用户语言、品类特征等综合判断后填写，用于表达高层搜索偏好
+> - 系统层仍负责 Tavily 工具装配、预算上限、失败重试和降级，不把 `research_brief` 当作唯一控制面
 
 ### 2.3 `onboard_user` payload
 
@@ -662,7 +667,7 @@ class ProductSearchOutput(BaseModel):
     "retry_count": 1,
     "result_status": "insufficient_results",
     "search_expanded": true,
-    "expansion_notes": "已将预算范围放宽约 30% 后再次搜索"
+    "expansion_notes": "已补充新的关键词组合并扩大来源覆盖后再次搜索"
   },
   "notes": "[搜索说明]",
   "suggested_followup": "[可选的后续建议]",
@@ -671,7 +676,7 @@ class ProductSearchOutput(BaseModel):
 ```
 
 > [!NOTE]
-> - `candidate_products` 保存的是**研究 Agent 初筛后的候选池**（通常 5-7 款）
+> - `candidate_products` 保存的是**研究 Agent 初筛后的候选池**（数量取决于候选质量，不设硬性最小值）
 > - 它不是主 Agent 当轮已推荐给用户的 3-5 款子集
 > - 对单品任务，它通常对应一个产品类型的候选池；对搭配/补齐类任务，它可以随着当前焦点变化被多次刷新，但**一次只保留当前焦点的一批候选**
 > - V1 的多目标任务按“单焦点顺序推进”设计：`candidate_products` 不承载多个 product_type 的并行候选池，也不负责跨焦点回看与统一排序

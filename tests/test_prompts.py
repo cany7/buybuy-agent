@@ -24,6 +24,15 @@ def test_load_product_search_template_reads_runtime_prompt_file() -> None:
 
     assert template.startswith("# 产品搜索任务")
     assert "搜索并筛选符合以下条件的 {product_type} 产品。" in template
+    assert "同一次 research run" in template
+    assert "参考区间" in template
+
+
+def test_load_main_agent_prompt_mentions_research_brief_as_high_level_strategy() -> None:
+    instructions = prompts_module.load_main_agent_instructions()
+
+    assert "research_brief" in instructions
+    assert "唯一控制面" in instructions
 
 
 def test_prompt_loaders_do_not_cache_stale_file_content(

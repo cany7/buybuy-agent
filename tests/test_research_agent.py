@@ -8,6 +8,7 @@ import pytest
 
 from src.agents.research_agent import (
     DEFAULT_RESEARCH_BRIEF,
+    build_research_agent_client,
     build_category_research_instructions,
     build_product_search_instructions,
     create_research_agent,
@@ -144,6 +145,72 @@ def test_create_research_agent_registers_search_tool() -> None:
     runner = create_research_agent("test instructions", client=DummyClient())
 
     assert len(runner.agent.default_options["tools"]) == 1
+
+
+def test_build_research_agent_client_uses_shared_default_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    from src.agents import research_agent as module
+
+    captured: dict[str, Any] = {}
+
+    class FakeClient:
+        def __init__(self, **kwargs: Any) -> None:
+            captured.update(kwargs)
+
+    monkeypatch.setattr(module, "OpenAIChatClient", FakeClient)
+    monkeypatch.setenv("LLM_BASE_URL", "https://openrouter.ai/api/v1")
+    monkeypatch.setenv("LLM_API_KEY", "shared-key")
+    monkeypatch.setenv("RESEARCH_AGENT_MODEL", "deepseek/deepseek-chat")
+    monkeypatch.delenv("RESEARCH_AGENT_BASE_URL", raising=False)
+    monkeypatch.delenv("RESEARCH_AGENT_API_KEY", raising=False)
+    monkeypatch.setenv("SHOPPING_RESEARCH_AGENT_MODEL", "legacy-model")
+
+    build_research_agent_client()
+
+    assert captured["model"] == "deepseek/deepseek-chat"
+    assert captured["base_url"] == "https://openrouter.ai/api/v1"
+    assert captured["api_key"] == "shared-key"
+    assert captured["function_invocation_configuration"]["max_iterations"] == 10
+    assert captured["function_invocation_configuration"]["max_function_calls"] == 20
+    assert captured["function_invocation_configuration"]["max_consecutive_errors_per_request"] == 2
+
+
+def test_build_research_agent_client_uses_agent_specific_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.agents import research_agent as module
+
+    captured: dict[str, Any] = {}
+
+    class FakeClient:
+        def __init__(self, **kwargs: Any) -> None:
+            captured.update(kwargs)
+
+    monkeypatch.setattr(module, "OpenAIChatClient", FakeClient)
+    monkeypatch.setenv("LLM_BASE_URL", "https://shared.example/v1")
+    monkeypatch.setenv("LLM_API_KEY", "shared-key")
+    monkeypatch.setenv("RESEARCH_AGENT_MODEL", "gpt-4.1-mini")
+    monkeypatch.setenv("RESEARCH_AGENT_BASE_URL", "https://research.example/v1")
+    monkeypatch.setenv("RESEARCH_AGENT_API_KEY", "research-key")
+
+    build_research_agent_client()
+
+    assert captured["base_url"] == "https://research.example/v1"
+    assert captured["api_key"] == "research-key"
+
+
+def test_build_research_agent_client_rejects_partial_agent_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LLM_BASE_URL", "https://shared.example/v1")
+    monkeypatch.setenv("LLM_API_KEY", "shared-key")
+    monkeypatch.setenv("RESEARCH_AGENT_BASE_URL", "https://research.example/v1")
+    monkeypatch.delenv("RESEARCH_AGENT_API_KEY", raising=False)
+
+    with pytest.raises(
+        ValueError,
+        match="RESEARCH_AGENT_BASE_URL and RESEARCH_AGENT_API_KEY must be set together",
+    ):
+        build_research_agent_client()
 
 
 def test_validate_research_payload_rejects_unsupported_task_type(caplog: pytest.LogCaptureFixture) -> None:

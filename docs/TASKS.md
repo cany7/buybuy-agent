@@ -99,9 +99,16 @@ shopping/
 └── .gitignore
 ```
 
-2. 安装依赖：`microsoft-agent-framework`（MAF）、`pydantic`、搜索工具依赖（`tavily-python` 或等效）
+2. 安装依赖：`microsoft-agent-framework`（MAF）、`pydantic`、搜索工具依赖（`tavily-python`）
 3. 配置 `.gitignore`（忽略 `data/`、`.env`、`__pycache__/` 等）
-4. 配置环境变量加载（`.env` 文件管理 API keys）
+4. 配置环境变量加载（`.env` 文件管理 API keys），并提供 `.env.example`
+
+**环境变量口径**：
+
+- 共享默认：`LLM_BASE_URL`、`LLM_API_KEY`
+- 主 Agent：`MAIN_AGENT_MODEL`、`MAIN_AGENT_BASE_URL`、`MAIN_AGENT_API_KEY`
+- 研究 Agent：`RESEARCH_AGENT_MODEL`、`RESEARCH_AGENT_BASE_URL`、`RESEARCH_AGENT_API_KEY`
+- 搜索工具：`TAVILY_API_KEY`
 
 **验收条件**：
 - [ ] `import src` 不报错
@@ -185,7 +192,7 @@ class DocumentStore:
 1. 定义主 Agent 的创建函数/类：
    - `instructions` = `src/prompts/main_agent_system.txt` 的完整 System Prompt（设计说明见 PROMPTS.md §1.2）
    - `output_type` = `DecisionOutput`
-   - `model` = 强推理模型（GPT-4o / Claude Opus，从配置读取）
+   - `model` = 从 env 读取的主 Agent 模型
    - **无 tools**（纯推理器）
 
 2. Agent 每次被外部循环调用时：
@@ -210,8 +217,8 @@ class DocumentStore:
 **内容**：
 
 1. 实现搜索工具（`tools.py`）：
-   - 方式一（推荐）：配置模型内置 web search
-   - 方式二：包装 Tavily API 的 `search_web` 函数
+   - 当前只保留 Tavily 的 `search_web` 函数
+   - 当前搜索 backend 固定为 Tavily
 
 2. 实现 `execute_research()` 函数：
    - 接收 `task_type` 和 `action_payload`
@@ -221,7 +228,8 @@ class DocumentStore:
    - 如仅做本地 fixture / 手工验证，可临时硬编码为中文，但这属于测试限定，不属于正式实现口径
    - `dispatch_product_search` 的 payload 校验接受 `constraints.budget = null / "unspecified"` 的合法情况
    - 创建研究 Agent 实例 → 运行 → 返回 `ProductSearchOutput`
-   - 每次创建新实例（独立 context）
+   - 每次 dispatch 创建新的临时 research run；run 完成后销毁，不长期保留子 Agent 中间上下文
+   - 研究 run 以广度优先为主，允许同一次 run 内更积极地多轮调用 Tavily；系统层只加预算和失败重试等薄护栏
 
 **验收条件**：
 - [ ] 研究 Agent 可独立运行搜索任务

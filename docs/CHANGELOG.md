@@ -16,7 +16,40 @@
 - 后续：下一步或注意事项（可选）
 ```
 
+## 2026-04-19
+
+### [docs] 重写 README 为公开展示版项目说明
+- 文件：`README.md`、`docs/CHANGELOG.md`
+- 变更：
+  1. 将原本偏运行配置说明的 README 重写为适合公开展示的中文项目简介
+  2. 补充产品定位、1+1 Agent 架构、Agent harness / 控制层、文档化记忆、真实项目结构、技术栈与当前进度说明
+  3. 明确项目仍在迭代中，并补充后续 Web UI 方向，但不把内部 Phase 规划直接暴露到 README
+- 原因：当前需要对外展示仓库，用于求职场景；README 需要同时体现产品思维、架构设计能力和当前工程落地状态，而不是仅保留内部开发视角的运行说明
+
 ## 2026-04-17
+
+### [implementation] 代码落地 Tavily-only 研究链路与 OpenAI-compatible env 合同
+- 文件：`src/utils/runtime_config.py`、`src/agents/main_agent.py`、`src/agents/research_agent.py`、`src/agents/tools.py`、`src/router/action_router.py`、`src/prompts/main_agent_system.txt`、`src/prompts/product_search.txt`、`src/prompts/category_research.txt`、`README.md`、`tests/test_main_agent.py`、`tests/test_research_agent.py`、`tests/test_action_router.py`、`tests/test_prompts.py`、`tests/test_tools.py`、`tests/test_env_example.py`、`docs/CHANGELOG.md`
+- 变更：
+  1. 新增共享运行时配置 helper，按“Agent 专属 > 共享默认 > 代码默认值”解析 OpenAI-compatible endpoint/key/model，并拒绝半配置的 Agent 专属覆盖
+  2. 主 Agent / 研究 Agent client factory 改为读取 `LLM_*`、`MAIN_AGENT_*`、`RESEARCH_AGENT_*`，不再依赖 `SHOPPING_*` 变量
+  3. 研究 Agent client 显式加入 function invocation guardrails，保持“一次 dispatch = 一次临时 research run”的运行模型
+  4. Tavily `search_web` 增加每次结果数 clamp、URL/文本去重和极长 `raw_content` 保护，仍保持广度优先，不做摘要重写
+  5. `ActionRouter` 对 `search_meta.retry_count` / `search_meta.search_expanded` 做应用层规范化，确保 `error_state` 和后续消费使用 authoritative 值
+  6. runtime prompt、README 和回归测试同步到 Tavily-only + 高层 `research_brief` + 薄护栏 的新口径
+- 原因：把上一轮已确认的文档方案真正落到实现上，消除文档、prompt、测试与运行时代码之间的配置和行为漂移
+- 后续：如后面要进一步开放 research budget env，可在当前 guardrails 基础上继续演进；本轮先保持代码默认值
+
+### [docs] 收口研究搜索口径为 Tavily-only 并补齐 env 合同
+- 文件：`docs/ARCHITECTURE.md`、`docs/SPEC.md`、`docs/INTERFACES.md`、`docs/PROMPTS.md`、`docs/TESTING.md`、`docs/TASKS.md`、`.env.example`、`docs/CHANGELOG.md`
+- 变更：
+  1. 将研究搜索方案统一收口为 Tavily 单工具口径，删除或替换文档中会造成歧义的额外搜索 backend 描述
+  2. 明确一次 `dispatch_*` 对应一次临时 research run：run 内不拆分多个子 Agent session，完成后销毁，不长期保留子 Agent 中间工具历史
+  3. 将 LLM 配置统一为 OpenAI-compatible env 合同，采用“Agent 专属配置 > 共享默认配置 > 代码默认值”的优先级，并新增 `.env.example`
+  4. 收紧 `search_meta` 的 ownership 说明：`retry_count` / `search_expanded` 由应用层规范化，研究 Agent 负责提供结构化结果而非唯一 telemetry source
+  5. 将研究策略文档调整为“增强版方案 A”：广度优先、同次 run 内积极多轮搜索、系统层只加薄护栏，不引入长期子 Agent session 或强编排器
+- 原因：本轮 review 已确认搜索模式、配置方式和子 Agent 生命周期的目标口径，需要先把开发文档统一，避免后续代码实现继续在架构、prompt 和测试之间漂移
+- 后续：运行时代码和 `src/prompts/` 仍需后续同步到本次文档口径；本次提交仅修改文档与示例配置文件
 
 ### [refactor] 迁移运行时 prompt 资源到 src/prompts
 - 文件：`src/prompts/`、`src/agents/prompts.py`、`tests/test_prompts.py`、`tests/test_main_agent.py`、`tests/test_research_agent.py`、`docs/PROMPTS.md`、`docs/TASKS.md`、`docs/ARCHITECTURE.md`、`docs/TESTING.md`、`docs/INTERFACES.md`、`docs/SPEC.md`、`docs/CHANGELOG.md`
